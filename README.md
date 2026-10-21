@@ -48,7 +48,21 @@
 
 ## 启动
 
-要求 Node.js **22.13+**（使用了 Node 内置的 `node:sqlite`）。
+macOS 和 Windows 都可以直接双击项目根目录的启动脚本：
+
+- macOS：**`start.command`**
+- Windows：**`start.bat`**
+
+脚本会：
+
+- 自动查找 Node.js（macOS 优先使用 nvm 中的 Node 22.22.3；Windows 会检查 PATH 和常见安装位置）
+- 启动后自动打开 `http://127.0.0.1:5173`
+- 保持窗口开着；关闭窗口或按 `Ctrl+C` 停止
+- 如果服务已经在运行，脚本只打开浏览器，不会重复启动
+
+如果 macOS 第一次拦截这个脚本，右键文件选择「打开」即可。Windows 按 `Ctrl+C` 后如果提示 `Terminate batch job (Y/N)?`，输入 `Y`。
+
+也可以在终端手动启动。要求 Node.js **22.13+**（使用了 Node 内置的 `node:sqlite`）。
 
 ```bash
 npm install
