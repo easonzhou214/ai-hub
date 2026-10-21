@@ -2746,7 +2746,7 @@ svg {
   color: #313942;
 }
 
-.switch-row span {
+.switch-row > div > span {
   display: block;
   margin-top: 3px;
   font-size: 13px;

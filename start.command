@@ -26,6 +26,9 @@ echo "  AI Hub"
 echo "=========================================="
 echo
 
+# Include standard macOS Node installations when launched from Finder.
+export PATH="/opt/homebrew/opt/node@22/bin:/usr/local/opt/node@22/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 # Prefer the known Node 22.22.3 from nvm. The project needs Node 22.13+
 # because the local bridge uses node:sqlite.
 NODE_DIR="$HOME/.nvm/versions/node/v22.22.3/bin"

@@ -55,7 +55,7 @@ macOS 和 Windows 都可以直接双击项目根目录的启动脚本：
 
 脚本会：
 
-- 自动查找 Node.js（macOS 优先使用 nvm 中的 Node 22.22.3；Windows 会检查 PATH 和常见安装位置）
+- 自动查找 Node.js（macOS 优先使用 nvm 中的 Node 22.22.3，同时检查 Homebrew 和常见安装位置；Windows 会检查 PATH 和常见安装位置）
 - 启动后自动打开 `http://127.0.0.1:5173`
 - 保持窗口开着；关闭窗口或按 `Ctrl+C` 停止
 - 如果服务已经在运行，脚本只打开浏览器，不会重复启动
