@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.shots/
+.preview-tools/
+.tooling/
+.npm-cache/
+.chrome-profile*/
+.DS_Store
+*.local
+.env
+.env.*
+preview/
+.npm-cache-tmp/
+.local/
