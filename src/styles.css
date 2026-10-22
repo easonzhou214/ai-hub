@@ -4765,3 +4765,28 @@ svg {
     font-size: 11px;
   }
 }
+
+/* ============================== Overview rhythm ============================== */
+/* Just a little tighter than the global scaffold; card contents stay untouched. */
+.overview-page {
+  padding: 24px 32px 32px;
+  gap: 21px;
+}
+
+.overview-page .stat-card {
+  min-height: 112px;
+  padding: 14px 17px 13px;
+}
+
+.overview-page .stat-value {
+  margin-top: 11px;
+}
+
+.overview-page .provider-groups {
+  gap: 16px;
+}
+
+.overview-page .provider-card {
+  gap: 12px;
+  padding: 15px 16px 12px;
+}
