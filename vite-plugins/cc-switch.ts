@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -14,14 +14,16 @@ import {
   readKrillAccountFromBrowser,
   type WebLoginProvider,
 } from './krill'
+import { logSyncEvent, readSyncEvents, SYNC_LOG_DIR } from './sync-log'
 
 /**
- * Local-only bridge to CC Switch and to the provider quota endpoints.
+ * Local-only bridge to CC Switch, Codex's active provider, and quota endpoints.
  *
  * - GET  /api/cc-switch/providers  -> custom Codex providers in CC Switch
  * - POST /api/cc-switch/usage      -> token/account quota for one provider
+ * - GET  /api/codex/current        -> provider currently used by the Codex app
  *
- * Both endpoints are restricted to loopback requests. Provider credentials
+ * All endpoints are restricted to loopback requests. Provider credentials
  * never leave the machine; the browser never has to call provider admin APIs
  * directly (some of those do not expose CORS headers).
  */
@@ -30,8 +32,27 @@ const PROVIDERS_PATH = '/api/cc-switch/providers'
 const USAGE_PATH = '/api/cc-switch/usage'
 const LOGIN_START_PATH = '/api/cc-switch/login/start'
 const LOGIN_STATUS_PATH = '/api/cc-switch/login/status'
+const CODEX_CURRENT_PATH = '/api/codex/current'
+const LOGS_PATH = '/api/cc-switch/logs'
+const CLIENT_LOG_PATH = '/api/cc-switch/log'
 const DB_PATH = join(homedir(), '.cc-switch', 'cc-switch.db')
+const CODEX_CONFIG_PATH = join(homedir(), '.codex', 'config.toml')
 const REQUEST_TIMEOUT_MS = 12_000
+const SYNC_ATTEMPTS = 3
+const RETRY_DELAYS_MS = [500, 1_500]
+
+export interface CodexCurrentSnapshot {
+  available: boolean
+  providerId: string
+  name: string
+  baseUrl: string
+  model: string
+  profile: string
+  /** CC Switch row that matches this Codex config, if any. */
+  sourceId: string | null
+  official: boolean
+  error?: string
+}
 
 export interface CcSwitchProvider {
   sourceId: string
@@ -79,6 +100,85 @@ function isLoopback(request: IncomingMessage) {
     address === '::1' ||
     address === '::ffff:127.0.0.1'
   )
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function errorCauseCode(error: unknown): string {
+  if (!(error instanceof Error)) return ''
+  const cause = (error as { cause?: unknown }).cause
+  if (!cause || typeof cause !== 'object') return ''
+  const record = cause as { code?: unknown; name?: unknown }
+  if (typeof record.code === 'string') return record.code
+  if (typeof record.name === 'string' && record.name !== 'Error') {
+    return record.name
+  }
+  return ''
+}
+
+function describeSyncError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      message: error.message || '未知错误',
+      code: errorCauseCode(error),
+    }
+  }
+  return { message: String(error) || '未知错误', code: '' }
+}
+
+const RETRYABLE_ERROR_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'TimeoutError',
+  'AbortError',
+])
+
+/**
+ * Only retry conditions that can plausibly heal in a second or two: dropped
+ * connections, DNS hiccups, upstream 5xx/429 and browser helper timeouts.
+ * Auth/config errors (401/404/missing quota endpoint) are returned immediately.
+ */
+function isRetryableSyncError(error: unknown) {
+  const { message, code } = describeSyncError(error)
+  if (RETRYABLE_ERROR_CODES.has(code)) return true
+  if (/\bHTTP (408|425|429|5\d{2})\b/.test(message)) return true
+  if (/超时|timed out|timeout/i.test(message)) return true
+  if (
+    /无法连接|连接被重置|解析失败|fetch failed|空响应|非 JSON 数据/.test(message)
+  ) {
+    return true
+  }
+  // The Chrome helper can be busy while a previous page is still loading.
+  return /读取登录态|登录窗口启动失败/.test(message)
+}
+
+let browserQueue: Promise<unknown> = Promise.resolve()
+
+/**
+ * Krill and Aixor read the same dedicated Chrome profile through CDP. Running
+ * both at the same time occasionally times out, so browser-backed reads are
+ * serialized. API-key providers do not take this lock.
+ */
+function withBrowserLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = browserQueue.then(
+    () => task(),
+    () => task(),
+  )
+  browserQueue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
 }
 
 function parseTomlValue(config: string, key: string) {
@@ -165,6 +265,124 @@ function readCcSwitchProviders(): CcSwitchResponse {
   }
 }
 
+function normalizeBaseUrl(value: string) {
+  const base = value.trim()
+  if (!base) return ''
+  try {
+    const url = new URL(base)
+    return `${url.hostname}${url.pathname.replace(/\/+$/, '')}`.toLowerCase()
+  } catch {
+    return base.replace(/\/+$/, '').toLowerCase()
+  }
+}
+
+interface TomlTable {
+  [key: string]: string
+}
+
+/**
+ * Codex config.toml only needs a tiny subset of TOML: root scalars,
+ * `[model_providers.*]` and `[profiles.*]` tables. Arrays and inline tables
+ * are skipped, and credentials are never forwarded to the browser.
+ */
+function parseTomlTables(text: string) {
+  const root: TomlTable = {}
+  const tables: Record<string, TomlTable> = {}
+  let current = root
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+
+    const header = /^\[([^\]]+)\]$/.exec(line)
+    if (header) {
+      const name = header[1].replace(/["']/g, '').trim()
+      const table: TomlTable = {}
+      tables[name] = table
+      current = table
+      continue
+    }
+
+    const assignment = /^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(line)
+    if (!assignment) continue
+    const key = assignment[1]
+    const rawValue = assignment[2].trim()
+    if (rawValue.startsWith('[') || rawValue.startsWith('{')) continue
+
+    let value = rawValue
+    if (value.startsWith('"') || value.startsWith("'")) {
+      const quote = value[0]
+      const end = value.lastIndexOf(quote)
+      value = end > 0 ? value.slice(1, end) : value.slice(1)
+    } else {
+      value = value.split('#')[0].trim()
+    }
+    current[key] = value
+  }
+
+  return { root, tables }
+}
+
+function readCodexCurrent(): CodexCurrentSnapshot {
+  const unavailable = (error: string): CodexCurrentSnapshot => ({
+    available: false,
+    providerId: '',
+    name: '',
+    baseUrl: '',
+    model: '',
+    profile: '',
+    sourceId: null,
+    official: false,
+    error,
+  })
+
+  if (!existsSync(CODEX_CONFIG_PATH)) {
+    return unavailable('没有找到 ~/.codex/config.toml')
+  }
+
+  let text: string
+  try {
+    text = readFileSync(CODEX_CONFIG_PATH, 'utf8')
+  } catch {
+    return unavailable('无法读取 ~/.codex/config.toml')
+  }
+
+  const { root, tables } = parseTomlTables(text)
+  const profile = (root.profile ?? '').trim()
+  const profileTable = profile ? tables[`profiles.${profile}`] : undefined
+  const providerId =
+    (profileTable?.model_provider ?? root.model_provider ?? 'openai').trim() ||
+    'openai'
+  const model = (profileTable?.model ?? root.model ?? '').trim()
+  const modelTable = tables[`model_providers.${providerId}`]
+  const baseUrl = (modelTable?.base_url ?? '').trim()
+  const official = providerId === 'openai' && !baseUrl
+  const name = (modelTable?.name ?? (official ? 'OpenAI 官方' : providerId)).trim()
+
+  let sourceId: string | null = null
+  if (baseUrl) {
+    const ccSwitch = readCcSwitchProviders()
+    if (ccSwitch.available) {
+      const target = normalizeBaseUrl(baseUrl)
+      const match = ccSwitch.providers.find(
+        (provider) => normalizeBaseUrl(provider.baseUrl) === target,
+      )
+      sourceId = match?.sourceId ?? null
+    }
+  }
+
+  return {
+    available: true,
+    providerId,
+    name,
+    baseUrl,
+    model,
+    profile,
+    sourceId,
+    official,
+  }
+}
+
 function sendJson(response: ServerResponse, status: number, payload: unknown) {
   response.statusCode = status
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -236,7 +454,23 @@ async function requestJson(
     }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error('供应商接口请求超时')
+      throw new Error('供应商接口请求超时', { cause: error })
+    }
+    const code = errorCauseCode(error)
+    if (code) {
+      const reason =
+        code === 'ENOTFOUND'
+          ? '供应商域名解析失败，请检查网络或代理'
+          : code === 'EAI_AGAIN'
+            ? 'DNS 解析超时，请检查网络或代理'
+            : code === 'ECONNREFUSED'
+              ? '供应商接口拒绝连接'
+              : code === 'ECONNRESET'
+                ? '供应商接口连接被重置'
+                : /TIMEOUT|ETIMEDOUT/.test(code)
+                  ? '供应商接口请求超时'
+                  : '无法连接供应商接口'
+      throw new Error(`${reason}（${code}）`, { cause: error })
     }
     throw error
   } finally {
@@ -506,10 +740,14 @@ async function handleUsage(
   request: IncomingMessage,
   response: ServerResponse,
 ) {
+  const startedAt = Date.now()
+  let sourceId = ''
+  let providerName: string | undefined
+  let attempts = 0
+
   try {
     const body = (await readJsonBody(request)) as { sourceId?: unknown }
-    const sourceId =
-      typeof body?.sourceId === 'string' ? body.sourceId.trim() : ''
+    sourceId = typeof body?.sourceId === 'string' ? body.sourceId.trim() : ''
     if (!sourceId) {
       sendJson(response, 400, { error: '缺少 sourceId' })
       return
@@ -526,22 +764,144 @@ async function handleUsage(
       (item) => item.sourceId === sourceId,
     )
     if (!provider) {
+      logSyncEvent({
+        level: 'error',
+        layer: 'server',
+        phase: 'usage',
+        sourceId,
+        durationMs: Date.now() - startedAt,
+        message: 'CC Switch 中找不到该供应商',
+      })
       sendJson(response, 404, { error: 'CC Switch 中找不到该供应商' })
       return
     }
+    providerName = provider.name
 
     const kind = webLoginKind(provider)
-    const payload =
-      kind === 'krill'
-        ? await readKrillProviderUsage(provider)
-        : kind === 'aixor'
-          ? await readAixorProviderUsage(provider)
-          : await readProviderUsage(provider)
+    // Browser-backed reads share one Chrome profile; only retry once so the
+    // other provider waiting on the lock is not blocked for too long.
+    const maxAttempts = kind ? 2 : SYNC_ATTEMPTS
+
+    const readOnce = async () => {
+      attempts += 1
+      if (kind === 'krill') return readKrillProviderUsage(provider)
+      if (kind === 'aixor') return readAixorProviderUsage(provider)
+      return readProviderUsage(provider)
+    }
+
+    const readWithRetry = async () => {
+      for (;;) {
+        try {
+          return await readOnce()
+        } catch (error) {
+          const { message, code } = describeSyncError(error)
+          const timedOut =
+            /超时|timed out|timeout/i.test(message) ||
+            code === 'ETIMEDOUT' ||
+            code === 'UND_ERR_CONNECT_TIMEOUT' ||
+            code === 'UND_ERR_HEADERS_TIMEOUT'
+          // A 12s timeout is expensive to repeat; give it one retry while
+          // connection-refused / 5xx errors still get the full budget.
+          const attemptLimit = timedOut
+            ? Math.min(maxAttempts, 2)
+            : maxAttempts
+          if (attempts >= attemptLimit || !isRetryableSyncError(error)) {
+            throw error
+          }
+          const wait = RETRY_DELAYS_MS[attempts - 1] ?? 1_500
+          logSyncEvent({
+            level: 'warn',
+            layer: 'server',
+            phase: 'usage',
+            provider: provider.name,
+            sourceId,
+            attempt: attempts,
+            durationMs: Date.now() - startedAt,
+            message: `${message}，${wait}ms 后重试`,
+            code: code || undefined,
+          })
+          await delay(wait)
+        }
+      }
+    }
+
+    const payload = kind
+      ? await withBrowserLock(readWithRetry)
+      : await readWithRetry()
+
+    const loginRequired = Boolean(
+      payload &&
+        typeof payload === 'object' &&
+        (payload as { loginRequired?: unknown }).loginRequired === true,
+    )
+    logSyncEvent({
+      level: loginRequired ? 'warn' : 'info',
+      layer: 'server',
+      phase: 'usage',
+      provider: provider.name,
+      sourceId,
+      attempt: attempts,
+      durationMs: Date.now() - startedAt,
+      message: loginRequired ? '需要登录才能读取账户额度' : '同步成功',
+    })
     sendJson(response, 200, payload)
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : '无法读取供应商额度'
-    sendJson(response, 502, { error: message })
+    const { message, code } = describeSyncError(error)
+    logSyncEvent({
+      level: 'error',
+      layer: 'server',
+      phase: 'usage',
+      provider: providerName,
+      sourceId,
+      attempt: attempts || undefined,
+      durationMs: Date.now() - startedAt,
+      message: message || '无法读取供应商额度',
+      code: code || undefined,
+    })
+    sendJson(response, 502, {
+      error: message || '无法读取供应商额度',
+      code: code || undefined,
+      retryable: isRetryableSyncError(error),
+    })
+  }
+}
+
+async function handleClientLog(
+  request: IncomingMessage,
+  response: ServerResponse,
+) {
+  try {
+    const body = (await readJsonBody(request, 4_096)) as Record<string, unknown>
+    const text = (value: unknown, max: number) =>
+      typeof value === 'string' ? value.trim().slice(0, max) || undefined : undefined
+    const level =
+      body.level === 'warn'
+        ? 'warn'
+        : body.level === 'error'
+          ? 'error'
+          : 'info'
+    logSyncEvent({
+      level,
+      layer: 'client',
+      phase: text(body.phase, 40) ?? 'client',
+      provider: text(body.provider, 120),
+      sourceId: text(body.sourceId, 120),
+      attempt:
+        typeof body.attempt === 'number' && Number.isFinite(body.attempt)
+          ? Math.max(1, Math.floor(body.attempt))
+          : undefined,
+      durationMs:
+        typeof body.durationMs === 'number' && Number.isFinite(body.durationMs)
+          ? Math.max(0, Math.round(body.durationMs))
+          : undefined,
+      message: text(body.message, 500) ?? '客户端同步失败',
+      code: text(body.code, 60),
+    })
+    sendJson(response, 200, { ok: true })
+  } catch (error) {
+    sendJson(response, 400, {
+      error: error instanceof Error ? error.message : '无法写入同步日志',
+    })
   }
 }
 
@@ -555,8 +915,11 @@ function ccSwitchMiddleware(
   const knownPaths = [
     PROVIDERS_PATH,
     USAGE_PATH,
+    CODEX_CURRENT_PATH,
     LOGIN_START_PATH,
     LOGIN_STATUS_PATH,
+    LOGS_PATH,
+    CLIENT_LOG_PATH,
   ]
   if (!knownPaths.includes(path)) {
     next()
@@ -565,8 +928,45 @@ function ccSwitchMiddleware(
 
   if (!isLoopback(request)) {
     sendJson(response, 403, {
-      error: 'CC Switch 本地接口只允许本机访问',
+      error: 'AI Hub 本地接口只允许本机访问',
     })
+    return
+  }
+
+  if (path === LOGS_PATH) {
+    if (request.method !== 'GET') {
+      response.setHeader('Allow', 'GET')
+      sendJson(response, 405, { error: 'Method not allowed' })
+      return
+    }
+    const parsed = new URL(url, 'http://127.0.0.1')
+    const requested = Number(parsed.searchParams.get('limit') ?? '100')
+    const limit = Number.isFinite(requested) && requested > 0 ? requested : 100
+    const result = readSyncEvents(limit)
+    sendJson(response, 200, {
+      path: result.path || SYNC_LOG_DIR,
+      events: result.events,
+    })
+    return
+  }
+
+  if (path === CLIENT_LOG_PATH) {
+    if (request.method !== 'POST') {
+      response.setHeader('Allow', 'POST')
+      sendJson(response, 405, { error: 'Method not allowed' })
+      return
+    }
+    void handleClientLog(request, response)
+    return
+  }
+
+  if (path === CODEX_CURRENT_PATH) {
+    if (request.method !== 'GET') {
+      response.setHeader('Allow', 'GET')
+      sendJson(response, 405, { error: 'Method not allowed' })
+      return
+    }
+    sendJson(response, 200, readCodexCurrent())
     return
   }
 

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Icon } from '../icons'
 import type { PageKey, Provider, ProviderType } from '../types'
 import {
+  TYPE_LABEL,
   formatMoney,
   formatNumber,
   getQuotaState,
@@ -15,6 +16,9 @@ import { EmptyState, SectionHead, Tabs } from '../components/ui'
 
 type Filter = 'all' | ProviderType
 
+/** Overview groups providers by type; keep this order in sync with the tabs. */
+const TYPE_ORDER: ProviderType[] = ['coding', 'image']
+
 interface OverviewProps {
   providers: Provider[]
   lastSyncedAt: string
@@ -23,17 +27,19 @@ interface OverviewProps {
   onNavigate: (page: PageKey) => void
   onLogin: (provider: Provider) => void
   loginBusyId?: string
+  codexProviderId?: string
 }
 
 const STATUS_ORDER: Record<string, number> = {
   expired: 0,
-  expiring: 1,
-  warning: 2,
-  login: 3,
-  error: 4,
-  unknown: 5,
-  healthy: 6,
-  disabled: 7,
+  exhausted: 1,
+  expiring: 2,
+  warning: 3,
+  login: 4,
+  error: 5,
+  unknown: 6,
+  healthy: 7,
+  disabled: 8,
 }
 
 export function Overview({
@@ -44,6 +50,7 @@ export function Overview({
   onNavigate,
   onLogin,
   loginBusyId,
+  codexProviderId,
 }: OverviewProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const enabled = providers.filter((provider) => provider.enabled)
@@ -81,6 +88,7 @@ export function Overview({
       const status = getStatus(provider)
       return (
         status === 'warning' ||
+        status === 'exhausted' ||
         status === 'expiring' ||
         status === 'expired' ||
         status === 'unknown' ||
@@ -129,6 +137,17 @@ export function Overview({
       return percentB - percentA
     })
   }, [providers, filter])
+
+  const providerGroups = useMemo(
+    () =>
+      TYPE_ORDER.flatMap((type) => {
+        const items = visibleProviders.filter(
+          (provider) => provider.type === type,
+        )
+        return items.length > 0 ? [{ type, items }] : []
+      }),
+    [visibleProviders],
+  )
 
   const enabledCoding = enabled.filter((p) => p.type === 'coding').length
   const enabledImage = enabled.filter((p) => p.type === 'image').length
@@ -214,7 +233,7 @@ export function Overview({
       <section className="providers-section">
         <SectionHead
           title="供应商额度"
-          description="按剩余额度从低到高排序，优先展示额度紧张、即将到期或待确认的供应商"
+          description="按类型分组，组内按剩余额度从低到高排序，优先展示额度耗尽、紧张、即将到期或待确认的供应商"
         >
           <Tabs<Filter>
             value={filter}
@@ -236,7 +255,7 @@ export function Overview({
           </button>
         </SectionHead>
 
-        {visibleProviders.length === 0 ? (
+        {providerGroups.length === 0 ? (
           <div className="panel">
             <EmptyState
               icon="server"
@@ -261,15 +280,39 @@ export function Overview({
             />
           </div>
         ) : (
-          <div className="provider-grid">
-            {visibleProviders.map((provider) => (
-              <ProviderCard
-                key={provider.id}
-                provider={provider}
-                onEdit={onEdit}
-                onLogin={onLogin}
-                loginBusy={loginBusyId === provider.sourceId}
-              />
+          <div className="provider-groups">
+            {providerGroups.map((group) => (
+              <section
+                key={group.type}
+                className={`provider-group provider-group-${group.type}`}
+                aria-labelledby={`provider-group-${group.type}`}
+              >
+                <div className="provider-group-head">
+                  <h3
+                    className="provider-group-title"
+                    id={`provider-group-${group.type}`}
+                  >
+                    <span className="provider-group-dot" aria-hidden="true" />
+                    {TYPE_LABEL[group.type]}
+                    <span className="provider-group-count">
+                      {group.items.length}
+                    </span>
+                  </h3>
+                  <span className="provider-group-rule" aria-hidden="true" />
+                </div>
+                <div className="provider-grid">
+                  {group.items.map((provider) => (
+                    <ProviderCard
+                      key={provider.id}
+                      provider={provider}
+                      onEdit={onEdit}
+                      onLogin={onLogin}
+                      loginBusy={loginBusyId === provider.sourceId}
+                      codexActive={provider.id === codexProviderId}
+                    />
+                  ))}
+                </div>
+              </section>
             ))}
           </div>
         )}

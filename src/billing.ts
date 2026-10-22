@@ -77,10 +77,50 @@ interface WebAccountUsagePayload {
 type ProviderUsagePayload = NewApiUsagePayload | WebAccountUsagePayload
 
 export function readableSyncError(error: unknown) {
-  if (error instanceof Error) {
-    return error.message.replace(/\s+/g, ' ').slice(0, 160)
+  const raw =
+    error instanceof Error
+      ? error.message.replace(/\s+/g, ' ').trim()
+      : ''
+  if (!raw) return '同步失败，请检查网络或密钥'
+  if (/无法连接本地 CC Switch/.test(raw)) {
+    return '本地同步服务不可用，请确认 npm run dev 仍在运行'
   }
-  return '同步失败，请检查网络或密钥'
+  if (/[\u4e00-\u9fff]/.test(raw)) {
+    // The local bridge already returns an actionable Chinese message
+    // (including the upstream error code), so do not flatten it.
+    return raw.slice(0, 160)
+  }
+  if (/load failed|failed to fetch|networkerror|network request failed/i.test(raw)) {
+    return '网络连接失败，请检查网络或代理'
+  }
+  if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR/i.test(raw)) {
+    return '无法连接供应商接口，请检查网络或代理'
+  }
+  if (/超时|timed out/i.test(raw)) {
+    return '接口响应超时，请稍后重试'
+  }
+  return raw.slice(0, 160)
+}
+
+const SYNC_REQUEST_ATTEMPTS = 3
+const SYNC_RETRY_DELAYS_MS = [400, 1_200]
+
+class UsageRequestError extends Error {
+  readonly retryable: boolean
+
+  constructor(message: string, retryable = false) {
+    super(message)
+    this.name = 'UsageRequestError'
+    this.retryable = retryable
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function networkAvailable() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false
 }
 
 function roundMoney(value: number) {
@@ -106,7 +146,7 @@ function nextReset(periodStart: number, period: string | null) {
   return date.toISOString()
 }
 
-async function fetchUsagePayload(
+async function fetchUsagePayloadOnce(
   sourceId: string,
 ): Promise<ProviderUsagePayload> {
   let response: Response
@@ -121,7 +161,10 @@ async function fetchUsagePayload(
       cache: 'no-store',
     })
   } catch {
-    throw new Error('无法连接本地 CC Switch 查询服务')
+    throw new UsageRequestError(
+      '无法连接本地 CC Switch 查询服务，请确认 npm run dev 仍在运行',
+      true,
+    )
   }
 
   let payload: unknown = null
@@ -129,7 +172,7 @@ async function fetchUsagePayload(
   try {
     payload = text ? JSON.parse(text) : null
   } catch {
-    throw new Error('本地额度查询返回了非 JSON 数据')
+    throw new UsageRequestError('本地额度查询返回了非 JSON 数据', true)
   }
 
   if (!response.ok) {
@@ -140,10 +183,49 @@ async function fetchUsagePayload(
       typeof (payload as { error?: unknown }).error === 'string'
         ? (payload as { error: string }).error
         : `额度查询失败（HTTP ${response.status}）`
-    throw new Error(message)
+    // Upstream 5xx/timeouts are already retried inside the local bridge.
+    // Retrying the whole request here would multiply the wait, so only retry
+    // local availability errors (dev server restarting / temporarily busy).
+    const retryable =
+      response.status === 429 ||
+      response.status === 503 ||
+      response.status === 504
+    throw new UsageRequestError(message, retryable)
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    throw new UsageRequestError('本地额度查询返回为空', true)
   }
 
   return payload as ProviderUsagePayload
+}
+
+/**
+ * The local bridge is a dev server: it restarts on config changes and can be
+ * briefly unreachable right after wake-from-sleep. Retry those connection
+ * failures instead of painting every provider as "同步失败".
+ */
+async function fetchUsagePayload(
+  sourceId: string,
+): Promise<ProviderUsagePayload> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= SYNC_REQUEST_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchUsagePayloadOnce(sourceId)
+    } catch (error) {
+      lastError = error
+      const retryable = error instanceof UsageRequestError && error.retryable
+      if (
+        !retryable ||
+        attempt === SYNC_REQUEST_ATTEMPTS ||
+        !networkAvailable()
+      ) {
+        break
+      }
+      await sleep(SYNC_RETRY_DELAYS_MS[attempt - 1] ?? 1_200)
+    }
+  }
+  throw lastError
 }
 
 function isWebAccountPayload(

@@ -83,9 +83,11 @@ export function ConfirmDialog({ state, onCancel }: ConfirmDialogProps) {
 
 export function Toast({
   message,
+  tone = 'success',
   onDismiss,
 }: {
   message: string | null
+  tone?: 'success' | 'error'
   onDismiss: () => void
 }) {
   useEffect(() => {
@@ -98,9 +100,9 @@ export function Toast({
 
   return (
     <div className="toast-layer" role="status" aria-live="polite">
-      <div className="toast">
-        <span className="toast-icon">
-          <Icon name="check" size={12} />
+      <div className={cx('toast', tone === 'error' && 'is-error')}>
+        <span className={cx('toast-icon', tone === 'error' && 'is-error')}>
+          <Icon name={tone === 'error' ? 'alert' : 'check'} size={12} />
         </span>
         {message}
       </div>

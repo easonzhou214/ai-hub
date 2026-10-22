@@ -17,6 +17,7 @@ interface TopBarProps {
   onImport: () => void
   onSelectProvider: (id: string) => void
   onExport: () => void
+  onOpenLogs: () => void
   onReset: () => void
 }
 
@@ -31,6 +32,7 @@ export function TopBar({
   onImport,
   onSelectProvider,
   onExport,
+  onOpenLogs,
   onReset,
 }: TopBarProps) {
   const [open, setOpen] = useState<PopoverKey>(null)
@@ -224,6 +226,18 @@ export function TopBar({
                 <Icon name="download" size={15} />
                 导出供应商配置
                 <span className="menu-hint">不含 Key</span>
+              </button>
+              <button
+                type="button"
+                className="menu-item"
+                onClick={() => {
+                  setOpen(null)
+                  onOpenLogs()
+                }}
+              >
+                <Icon name="info" size={15} />
+                同步日志
+                <span className="menu-hint">诊断</span>
               </button>
               <button
                 type="button"

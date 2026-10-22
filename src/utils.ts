@@ -285,13 +285,16 @@ export function getStatus(provider: Provider): ProviderStatus {
   if (provider.syncError) return 'error'
   if (provider.limitUnknown) return 'unknown'
   if (provider.billing === 'quota' && provider.quotaTotal > 0) {
-    const percent = getQuotaState(provider).percent
-    return percent !== null && percent >= 80 ? 'warning' : 'healthy'
+    const quota = getQuotaState(provider)
+    if (quota.available <= 0) return 'exhausted'
+    return quota.percent !== null && quota.percent >= 80 ? 'warning' : 'healthy'
   }
   if (provider.accountBalance !== undefined) {
+    if (provider.accountBalance <= 0) return 'exhausted'
     return provider.accountBalance < 1 ? 'warning' : 'healthy'
   }
   const percent = getQuotaState(provider).percent
+  if (percent !== null && percent >= 100) return 'exhausted'
   if (percent !== null && percent >= 80) return 'warning'
   return 'healthy'
 }
@@ -302,6 +305,10 @@ export const STATUS_META: Record<
 > = {
   healthy: { label: '正常', hint: '额度充足，状态良好' },
   warning: { label: '额度紧张', hint: '使用率较高或账户余额偏低' },
+  exhausted: {
+    label: '额度耗尽',
+    hint: '周期额度或账户余额已用完，请等待重置或续费',
+  },
   unknown: {
     label: '额度待确认',
     hint: 'API Key 不限额，但账户额度没有通过接口返回',
@@ -404,13 +411,19 @@ export function providerAlerts(provider: Provider): AlertItem[] {
 
   const quota = getQuotaState(provider)
   if (quota.percent !== null && quota.percent >= 80) {
+    const exhausted = quota.available <= 0
     alerts.push({
       id: `${provider.id}-quota`,
       providerId: provider.id,
       tone: 'warn',
-      title: `${provider.name} 额度已用 ${Math.round(quota.percent)}%`,
-      description:
-        provider.billing === 'quota'
+      title: exhausted
+        ? `${provider.name} 额度已耗尽`
+        : `${provider.name} 额度已用 ${Math.min(99, Math.round(quota.percent))}%`,
+      description: exhausted
+        ? provider.billing === 'quota'
+          ? `本周期额度 ${formatQuota(quota.total ?? 0, provider)} 已全部用完，请等待重置或续费，或切换到其他供应商。`
+          : '本月预算已全部用完，请调整预算或切换到其他供应商。'
+        : provider.billing === 'quota'
           ? `仅剩 ${formatQuota(quota.available, provider)} ${
               provider.resetAt ? '周期额度' : '账户额度'
             }，建议提前补充。`

@@ -12,15 +12,14 @@ import {
   isInterfaceSynced,
   loginBrand,
   logoText,
-  relativeTime,
   remainingPercent,
   resetLabel,
 } from '../utils'
 import {
+  CodexLiveBadge,
   ProgressBar,
   ProviderLogo,
   StatusBadge,
-  TypeChip,
   usageTone,
 } from './ui'
 
@@ -29,11 +28,14 @@ export function ProviderCard({
   onEdit,
   onLogin,
   loginBusy = false,
+  codexActive = false,
 }: {
   provider: Provider
   onEdit: (provider: Provider) => void
   onLogin?: (provider: Provider) => void
   loginBusy?: boolean
+  /** Codex is currently using this provider. */
+  codexActive?: boolean
 }) {
   const quota = getQuotaState(provider)
   const remaining = remainingPercent(quota.percent)
@@ -65,12 +67,15 @@ export function ProviderCard({
     : provider.billing === 'quota'
       ? `剩余 ${formatQuota(quota.available, provider)}`
       : `余额 ${money(provider.balance)}`
-  const lastSync = provider.lastSyncedAt
-    ? relativeTime(provider.lastSyncedAt)
-    : ''
 
   return (
-    <article className={cx('provider-card', !provider.enabled && 'is-disabled')}>
+    <article
+      className={cx(
+        'provider-card',
+        !provider.enabled && 'is-disabled',
+        codexActive && 'is-codex-active',
+      )}
+    >
       <div className="pc-top">
         <ProviderLogo
           text={logoText(provider)}
@@ -79,8 +84,7 @@ export function ProviderCard({
         />
         <div className="pc-identity">
           <div className="pc-name-row">
-            <h3>{provider.name}</h3>
-            <TypeChip type={provider.type} />
+            <h4>{provider.name}</h4>
           </div>
           <p className="pc-sub" title={`${provider.vendor} · ${provider.planName}`}>
             {provider.vendor} · {provider.planName}
@@ -91,7 +95,10 @@ export function ProviderCard({
 
       <div className="pc-usage">
         <div className="pc-usage-head">
-          <span className="pc-usage-label">{needsLogin ? '账户额度' : quota.label}</span>
+          <span className="pc-usage-label">
+            {needsLogin ? '账户额度' : quota.label}
+            {codexActive && <CodexLiveBadge />}
+          </span>
           {needsLogin ? (
             <span className="pc-usage-value" aria-hidden="true">
               —
@@ -170,7 +177,10 @@ export function ProviderCard({
             <ProgressBar
               value={remaining}
               tone={usageTone(quota.percent)}
-              label={`${provider.name} 剩余额度`}
+              label={`${provider.name} 剩余额度${
+                codexActive ? '，Codex 正在消耗' : ''
+              }`}
+              active={codexActive}
             />
             <div className="pc-usage-meta">
               <span>
@@ -234,10 +244,6 @@ export function ProviderCard({
                 {resetLabel(provider)}
               </span>
             )}
-            <span className="pc-meta">
-              <Icon name="refresh" size={13} />
-              {lastSync ? `${lastSync}同步` : '等待首次同步'}
-            </span>
             {provider.modelCount ? (
               <span className="pc-meta">
                 <Icon name="layers" size={13} />

@@ -15,6 +15,7 @@ export type PageKey = 'overview' | 'providers' | 'usage'
 export type ProviderStatus =
   | 'healthy'
   | 'warning'
+  | 'exhausted'
   | 'unknown'
   | 'login'
   | 'error'

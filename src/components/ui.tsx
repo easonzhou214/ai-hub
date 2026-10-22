@@ -55,17 +55,27 @@ export function ProgressBar({
   tone,
   thin = false,
   label,
+  active = false,
 }: {
   value: number | null
   tone?: 'ok' | 'warn' | 'danger'
   thin?: boolean
   label?: string
+  /** Codex is currently consuming this quota — animate the remaining bar. */
+  active?: boolean
 }) {
   const width = value === null ? 0 : Math.min(Math.max(value, 0), 100)
   const resolvedTone = tone ?? usageTone(value)
+  const burning = active && width > 0
   return (
     <div
-      className={cx('progress', `progress-${resolvedTone}`, thin && 'progress-thin')}
+      className={cx(
+        'progress',
+        `progress-${resolvedTone}`,
+        thin && 'progress-thin',
+        burning && 'progress-burning',
+      )}
+      style={{ '--fill': `${width}%` } as CSSProperties}
       role="progressbar"
       aria-valuemin={0}
       aria-valuemax={100}
@@ -74,6 +84,18 @@ export function ProgressBar({
     >
       <span className="progress-fill" style={{ width: `${width}%` }} />
     </div>
+  )
+}
+
+export function CodexLiveBadge() {
+  return (
+    <span
+      className="codex-live-badge"
+      title="Codex 当前使用的供应商，额度正在消耗"
+    >
+      <Icon name="flame" size={11} />
+      Codex 在用
+    </span>
   )
 }
 

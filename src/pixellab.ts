@@ -26,6 +26,27 @@
  */
 
 const BALANCE_URL = 'https://api.pixellab.ai/v2/balance'
+const BALANCE_TIMEOUT_MS = 15_000
+const BALANCE_ATTEMPTS = 3
+const BALANCE_RETRY_DELAYS_MS = [500, 1_500]
+
+class PixellabRequestError extends Error {
+  readonly retryable: boolean
+
+  constructor(message: string, retryable = false) {
+    super(message)
+    this.name = 'PixellabRequestError'
+    this.retryable = retryable
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function networkAvailable() {
+  return typeof navigator === 'undefined' || navigator.onLine !== false
+}
 
 interface BalancePayload {
   credits?: { type?: string; usd?: number | null } | null
@@ -50,14 +71,7 @@ export interface PixellabBalance {
   generationsTotal?: number
 }
 
-export async function fetchPixellabBalance(
-  apiKey: string,
-): Promise<PixellabBalance> {
-  const token = apiKey.trim()
-  if (!token) {
-    throw new Error('请先填写 PixelLab API Token')
-  }
-
+async function fetchBalanceOnce(token: string): Promise<PixellabBalance> {
   let response: Response
   try {
     response = await fetch(BALANCE_URL, {
@@ -67,28 +81,53 @@ export async function fetchPixellabBalance(
         Authorization: `Bearer ${token}`,
       },
       cache: 'no-store',
+      signal: AbortSignal.timeout(BALANCE_TIMEOUT_MS),
     })
-  } catch {
-    throw new Error('无法连接 PixelLab 接口，请检查网络')
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'TimeoutError' || error.name === 'AbortError')
+    ) {
+      throw new PixellabRequestError('PixelLab 接口响应超时，请稍后重试', true)
+    }
+    throw new PixellabRequestError('无法连接 PixelLab 接口，请检查网络', true)
   }
 
   if (response.status === 401) {
-    throw new Error('PixelLab API Token 无效或已失效')
+    throw new PixellabRequestError('PixelLab API Token 无效或已失效')
+  }
+  if (response.status === 429) {
+    throw new PixellabRequestError(
+      'PixelLab 请求过于频繁，请稍后重试',
+      true,
+    )
   }
 
-  const text = await response.text()
+  let text: string
+  try {
+    text = await response.text()
+  } catch {
+    throw new PixellabRequestError('PixelLab 响应读取失败，请重试', true)
+  }
+
   let payload: BalancePayload | null = null
   try {
     payload = text ? (JSON.parse(text) as BalancePayload) : null
   } catch {
-    throw new Error('PixelLab 额度查询返回了非 JSON 数据')
+    throw new PixellabRequestError(
+      'PixelLab 额度查询返回了非 JSON 数据',
+      true,
+    )
   }
 
   if (!response.ok) {
-    throw new Error(`PixelLab 额度查询失败（HTTP ${response.status}）`)
+    throw new PixellabRequestError(
+      `PixelLab 额度查询失败（HTTP ${response.status}）`,
+      response.status >= 500,
+    )
   }
   if (!payload) {
-    throw new Error('PixelLab 额度查询返回为空')
+    throw new PixellabRequestError('PixelLab 额度查询返回为空', true)
   }
 
   const finite = (value: unknown) => {
@@ -111,4 +150,32 @@ export async function fetchPixellabBalance(
       total === undefined ? undefined : Math.max(total, 0),
     generationsLeft: left === undefined ? undefined : Math.max(left, 0),
   }
+}
+
+export async function fetchPixellabBalance(
+  apiKey: string,
+): Promise<PixellabBalance> {
+  const token = apiKey.trim()
+  if (!token) {
+    throw new Error('请先填写 PixelLab API Token')
+  }
+
+  let lastError: unknown
+  for (let attempt = 1; attempt <= BALANCE_ATTEMPTS; attempt += 1) {
+    try {
+      return await fetchBalanceOnce(token)
+    } catch (error) {
+      lastError = error
+      const retryable = error instanceof PixellabRequestError && error.retryable
+      const timedOut =
+        error instanceof PixellabRequestError && /超时/.test(error.message)
+      // Do not spend 3 × 15s on a stalled connection.
+      const attemptLimit = timedOut ? 2 : BALANCE_ATTEMPTS
+      if (!retryable || attempt >= attemptLimit || !networkAvailable()) {
+        break
+      }
+      await sleep(BALANCE_RETRY_DELAYS_MS[attempt - 1] ?? 1_500)
+    }
+  }
+  throw lastError
 }

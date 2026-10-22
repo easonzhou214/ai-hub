@@ -34,6 +34,7 @@ interface UsagePageProps {
   providers: Provider[]
   onEdit: (provider: Provider) => void
   onNavigate: (page: PageKey) => void
+  codexProviderId?: string
 }
 
 const TYPE_COLOR: Record<ProviderType, string> = {
@@ -55,6 +56,7 @@ export function UsagePage({
   providers,
   onEdit,
   onNavigate,
+  codexProviderId,
 }: UsagePageProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const enabled = providers.filter((provider) => provider.enabled)
@@ -83,6 +85,7 @@ export function UsagePage({
     const synced = enabled.filter(isInterfaceSynced)
     const expiring = enabled.filter((p) => getStatus(p) === 'expiring').length
     const warning = enabled.filter((p) => getStatus(p) === 'warning').length
+    const exhausted = enabled.filter((p) => getStatus(p) === 'exhausted').length
     const expired = enabled.filter((p) => getStatus(p) === 'expired').length
     const errorCount = enabled.filter((p) => getStatus(p) === 'error').length
     const loginCount = enabled.filter((p) => getStatus(p) === 'login').length
@@ -119,6 +122,7 @@ export function UsagePage({
       syncErrorCount: synced.filter((p) => p.syncError).length,
       expiring,
       warning,
+      exhausted,
       expired,
       errorCount,
       loginCount,
@@ -312,6 +316,7 @@ export function UsagePage({
             <p className="summary-value">
               {summary.expiring +
                 summary.warning +
+                summary.exhausted +
                 summary.expired +
                 summary.errorCount +
                 summary.loginCount +
@@ -321,6 +326,7 @@ export function UsagePage({
             <p className="summary-foot">
               {summary.expiring +
                 summary.warning +
+                summary.exhausted +
                 summary.expired +
                 summary.errorCount +
                 summary.loginCount +
@@ -329,6 +335,9 @@ export function UsagePage({
                 ? '所有启用供应商状态良好'
                 : [
                     summary.expired > 0 ? `${summary.expired} 个已过期` : '',
+                    summary.exhausted > 0
+                      ? `${summary.exhausted} 个额度耗尽`
+                      : '',
                     summary.expiring > 0 ? `${summary.expiring} 个即将到期` : '',
                     summary.warning > 0 ? `${summary.warning} 个额度紧张` : '',
                     summary.errorCount > 0
@@ -487,6 +496,7 @@ export function UsagePage({
               {rows.map((provider) => {
                 const quota = getQuotaState(provider)
                 const remaining = remainingPercent(quota.percent)
+                const codexActive = provider.id === codexProviderId
                 const status = getStatus(provider)
                 const expiry = expiryLabel(provider)
                 const synced = isInterfaceSynced(provider)
@@ -524,6 +534,7 @@ export function UsagePage({
                     className={cx(
                       'ut-row',
                       !provider.enabled && 'is-disabled',
+                      codexActive && 'is-codex-active',
                     )}
                     role="button"
                     tabIndex={0}
@@ -543,7 +554,19 @@ export function UsagePage({
                         size="sm"
                       />
                       <div>
-                        <strong>{provider.name}</strong>
+                        <div className="ut-name-line">
+                          <strong>{provider.name}</strong>
+                          {codexActive && (
+                            <i
+                              className="ut-codex-flame"
+                              role="img"
+                              aria-label="Codex 当前使用的供应商，额度正在消耗"
+                              title="Codex 当前使用的供应商，额度正在消耗"
+                            >
+                              <Icon name="flame" size={12} />
+                            </i>
+                          )}
+                        </div>
                         <span>
                           {provider.vendor} ·{' '}
                           {synced
@@ -653,7 +676,10 @@ export function UsagePage({
                           value={remaining}
                           tone={usageTone(quota.percent)}
                           thin
-                          label={`${provider.name} 剩余额度`}
+                          label={`${provider.name} 剩余额度${
+                codexActive ? '，Codex 正在消耗' : ''
+              }`}
+                          active={codexActive}
                         />
                       )}
                       {hasBoth && (

@@ -4,6 +4,7 @@ import { LoginDialog, type LoginUiState } from './components/LoginDialog'
 import { ConfirmDialog, Toast, type ConfirmState } from './components/Overlays'
 import { ProviderDrawer } from './components/ProviderDrawer'
 import { Sidebar } from './components/Sidebar'
+import { SyncLogDialog } from './components/SyncLogDialog'
 import { TopBar } from './components/TopBar'
 import {
   applyBillingSnapshot,
@@ -14,10 +15,16 @@ import {
   ccSwitchProviderToProvider,
   fetchCcSwitchProviders,
 } from './ccSwitch'
+import {
+  fetchCodexCurrent,
+  findCodexProvider,
+  type CodexCurrentSnapshot,
+} from './codex'
 import { createSeedProviders, createSeedSyncedAt } from './data'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
 import { UsagePage } from './pages/Usage'
+import { reportSyncFailure } from './syncLog'
 import type {
   PageKey,
   Provider,
@@ -163,6 +170,9 @@ export default function App() {
     () => true,
     (value): value is boolean => typeof value === 'boolean',
   )
+  const [codexCurrent, setCodexCurrent] = useState<CodexCurrentSnapshot | null>(
+    null,
+  )
   const [booted, setBooted] = useState(hadStoredProviders)
   const [bootMessage, setBootMessage] = useState(
     '正在从 CC Switch 读取供应商…',
@@ -176,12 +186,26 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   const [login, setLogin] = useState<LoginUiState | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
-  const [toast, setToast] = useState<{ id: number; message: string } | null>(null)
+  const [logsOpen, setLogsOpen] = useState(false)
+  const [toast, setToast] = useState<{
+    id: number
+    message: string
+    tone: 'success' | 'error'
+  } | null>(null)
   const mainRef = useRef<HTMLElement>(null)
   const syncingRef = useRef(false)
 
-  const notify = useCallback((message: string) => {
-    setToast({ id: Date.now(), message })
+  const notify = useCallback(
+    (message: string, tone: 'success' | 'error' = 'success') => {
+      setToast({ id: Date.now(), message, tone })
+    },
+    [],
+  )
+
+  const refreshCodexCurrent = useCallback(async () => {
+    const next = await fetchCodexCurrent()
+    // Keep the last marker through transient bridge failures.
+    if (next) setCodexCurrent(next)
   }, [])
 
   const dismissToast = useCallback(() => setToast(null), [])
@@ -366,6 +390,7 @@ export default function App() {
       // 自动同步（5 分钟）或手动点同步。
       if (nextProvider.syncMode === 'pixellab' && nextProvider.enabled) {
         void (async () => {
+          const startedAt = Date.now()
           try {
             const snapshot = await fetchProviderBilling(nextProvider)
             setProviders((current) =>
@@ -379,6 +404,7 @@ export default function App() {
             notify(`已读取 ${nextProvider.name} 的 PixelLab 额度`)
           } catch (error) {
             const message = readableSyncError(error)
+            reportSyncFailure(nextProvider, error, Date.now() - startedAt)
             setProviders((current) =>
               current.map((provider) =>
                 provider.id === nextProvider.id
@@ -390,7 +416,7 @@ export default function App() {
                   : provider,
               ),
             )
-            notify(`${nextProvider.name} 额度读取失败：${message}`)
+            notify(`${nextProvider.name} 额度读取失败：${message}`, 'error')
           }
         })()
       }
@@ -510,7 +536,7 @@ export default function App() {
           : `已导入 ${result.providers.length} 个供应商，额度同步失败`,
       )
     } catch (error) {
-      notify(readableSyncError(error))
+      notify(readableSyncError(error), 'error')
     } finally {
       setImporting(false)
     }
@@ -523,25 +549,36 @@ export default function App() {
         if (!silent) notify('没有启用的供应商可同步')
         return
       }
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        if (!silent) notify('网络已断开，恢复网络后会自动重试', 'error')
+        return
+      }
       syncingRef.current = true
       setSyncing(true)
       try {
         let realSynced = 0
-        let realFailed = 0
+        const failures: Array<{ name: string; message: string }> = []
         const now = new Date().toISOString()
         const updated = await Promise.all(
           providers.map(async (provider) => {
             if (!provider.enabled) return provider
             if (isInterfaceSynced(provider)) {
+              const startedAt = Date.now()
               try {
                 const snapshot = await fetchProviderBilling(provider)
                 realSynced += 1
                 return applyBillingSnapshot(provider, snapshot)
               } catch (error) {
-                realFailed += 1
+                const message = readableSyncError(error)
+                const raw =
+                  error instanceof Error ? error.message : String(error ?? '')
+                if (provider.syncMode === 'pixellab' || /无法连接本地/.test(raw)) {
+                  reportSyncFailure(provider, error, Date.now() - startedAt)
+                }
+                failures.push({ name: provider.name, message })
                 return {
                   ...provider,
-                  syncError: readableSyncError(error),
+                  syncError: message,
                   updatedAt: now,
                 }
               }
@@ -551,21 +588,34 @@ export default function App() {
         )
         setProviders(updated)
         setLastSyncedAt(now)
+        void refreshCodexCurrent()
         if (!silent) {
-          notify(
-            realSynced > 0 || realFailed > 0
-              ? realFailed > 0
-                ? `已同步 ${realSynced} 个接口供应商，${realFailed} 个失败`
-                : `已同步 ${realSynced} 个接口供应商的最新额度`
-              : `已同步 ${providers.filter((provider) => provider.enabled).length} 个供应商的额度`,
-          )
+          if (failures.length > 0) {
+            const first = failures[0]
+            const extra =
+              failures.length > 1 ? ` 等 ${failures.length} 个` : ''
+            const reason =
+              first.message.length > 64
+                ? `${first.message.slice(0, 64)}…`
+                : first.message
+            notify(
+              `已同步 ${realSynced} 个，${first.name}${extra}失败：${reason}`,
+              'error',
+            )
+          } else if (realSynced > 0) {
+            notify(`已同步 ${realSynced} 个接口供应商的最新额度`)
+          } else {
+            notify(
+              `已同步 ${providers.filter((provider) => provider.enabled).length} 个供应商的额度`,
+            )
+          }
         }
       } finally {
         syncingRef.current = false
         setSyncing(false)
       }
     },
-    [notify, providers, setLastSyncedAt, setProviders],
+    [notify, providers, refreshCodexCurrent, setLastSyncedAt, setProviders],
   )
 
   const handleRefresh = useCallback(() => {
@@ -574,6 +624,7 @@ export default function App() {
 
   const runSyncRef = useRef(runSync)
   const lastSyncedAtRef = useRef(lastSyncedAt)
+  const providersRef = useRef(providers)
 
   useEffect(() => {
     runSyncRef.current = runSync
@@ -583,7 +634,13 @@ export default function App() {
     lastSyncedAtRef.current = lastSyncedAt
   }, [lastSyncedAt])
 
-  // Auto sync: refresh stale data on load and every few minutes while visible.
+  useEffect(() => {
+    providersRef.current = providers
+  }, [providers])
+
+  // Auto sync: refresh stale data on load, every few minutes, and after the
+  // machine wakes or the network comes back. After wake-from-sleep Safari can
+  // become visible before Wi-Fi/DNS is ready, so wait before hitting APIs.
   useEffect(() => {
     if (!booted || !autoSync) return
 
@@ -591,25 +648,61 @@ export default function App() {
       const last = new Date(lastSyncedAtRef.current).getTime()
       return Number.isNaN(last) || Date.now() - last >= AUTO_SYNC_INTERVAL_MS
     }
-    const syncIfVisible = () => {
+    const needsSync = () =>
+      isStale() ||
+      providersRef.current.some(
+        (provider) => provider.enabled && provider.syncError,
+      )
+
+    let wakeTimer = 0
+    let initialTimer = 0
+    const syncNow = () => {
       if (document.visibilityState === 'visible') {
         void runSyncRef.current(true)
       }
     }
+    const scheduleSync = (delayMs: number) => {
+      window.clearTimeout(wakeTimer)
+      wakeTimer = window.setTimeout(syncNow, delayMs)
+    }
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && isStale()) {
-        void runSyncRef.current(true)
+      if (document.visibilityState === 'visible' && needsSync()) {
+        scheduleSync(1_500)
       }
     }
+    const handleOnline = () => {
+      if (document.visibilityState === 'visible') scheduleSync(600)
+    }
 
-    if (isStale()) syncIfVisible()
-    const interval = window.setInterval(syncIfVisible, AUTO_SYNC_INTERVAL_MS)
+    if (needsSync()) initialTimer = window.setTimeout(syncNow, 800)
+    const interval = window.setInterval(syncNow, AUTO_SYNC_INTERVAL_MS)
     document.addEventListener('visibilitychange', handleVisibility)
+    window.addEventListener('online', handleOnline)
     return () => {
       window.clearInterval(interval)
+      window.clearTimeout(wakeTimer)
+      window.clearTimeout(initialTimer)
       document.removeEventListener('visibilitychange', handleVisibility)
+      window.removeEventListener('online', handleOnline)
     }
   }, [autoSync, booted])
+
+  // Follow Codex's active provider even when quota data is not due for a sync.
+  useEffect(() => {
+    if (!booted) return
+    void refreshCodexCurrent()
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshCodexCurrent()
+    }, 30_000)
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') void refreshCodexCurrent()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+    return () => {
+      window.clearInterval(poll)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [booted, refreshCodexCurrent])
 
   const handleLoginProvider = useCallback(
     async (provider: Provider) => {
@@ -766,6 +859,12 @@ export default function App() {
       ? login.sourceId
       : undefined
 
+  const codexProvider = useMemo(
+    () => findCodexProvider(providers, codexCurrent),
+    [codexCurrent, providers],
+  )
+  const codexProviderId = codexProvider?.id
+
   if (!booted) {
     return <BootScreen message={bootMessage} />
   }
@@ -786,6 +885,7 @@ export default function App() {
           if (provider) openEdit(provider)
         }}
         onExport={handleExport}
+        onOpenLogs={() => setLogsOpen(true)}
         onReset={handleReset}
       />
 
@@ -805,6 +905,7 @@ export default function App() {
               onNavigate={navigate}
               onLogin={handleLoginProvider}
               loginBusyId={loginBusyId}
+              codexProviderId={codexProviderId}
             />
           )}
           {page === 'providers' && (
@@ -819,6 +920,7 @@ export default function App() {
               onDelete={handleDelete}
               onLogin={handleLoginProvider}
               loginBusyId={loginBusyId}
+              codexProviderId={codexProviderId}
             />
           )}
           {page === 'usage' && (
@@ -826,6 +928,7 @@ export default function App() {
               providers={providers}
               onEdit={openEdit}
               onNavigate={navigate}
+              codexProviderId={codexProviderId}
             />
           )}
         </main>
@@ -846,6 +949,8 @@ export default function App() {
 
       <ConfirmDialog state={confirm} onCancel={() => setConfirm(null)} />
 
+      <SyncLogDialog open={logsOpen} onClose={() => setLogsOpen(false)} />
+
       <LoginDialog
         state={login}
         onCancel={() => setLogin(null)}
@@ -855,6 +960,7 @@ export default function App() {
       <Toast
         key={toast?.id}
         message={toast?.message ?? null}
+        tone={toast?.tone}
         onDismiss={dismissToast}
       />
     </div>

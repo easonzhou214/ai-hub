@@ -16,6 +16,7 @@ import {
   cx,
 } from '../utils'
 import {
+  CodexLiveBadge,
   EmptyState,
   ProgressBar,
   ProviderLogo,
@@ -39,6 +40,7 @@ interface ProvidersPageProps {
   onDelete: (provider: Provider) => void
   onLogin: (provider: Provider) => void
   loginBusyId?: string
+  codexProviderId?: string
 }
 
 function hostOf(url: string) {
@@ -61,6 +63,7 @@ export function ProvidersPage({
   onDelete,
   onLogin,
   loginBusyId,
+  codexProviderId,
 }: ProvidersPageProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
@@ -254,6 +257,7 @@ export function ProvidersPage({
             {filtered.map((provider) => {
               const quota = getQuotaState(provider)
               const remaining = remainingPercent(quota.percent)
+              const codexActive = provider.id === codexProviderId
               const status = getStatus(provider)
               const expiry = expiryLabel(provider)
               const synced = isInterfaceSynced(provider)
@@ -290,6 +294,7 @@ export function ProvidersPage({
                   className={cx(
                     'pt-row',
                     !provider.enabled && 'is-disabled',
+                    codexActive && 'is-codex-active',
                   )}
                 >
                   <div className="pt-provider">
@@ -383,8 +388,11 @@ export function ProvidersPage({
                           <span>账户余额</span>
                         </span>
                       ) : (
-                        <span className="pt-percent">
-                          {formatPercent(remaining)}
+                        <span className="pt-usage-metric">
+                          <span className="pt-percent">
+                            {formatPercent(remaining)}
+                          </span>
+                          {codexActive && <CodexLiveBadge />}
                         </span>
                       )}
                       <span className="pt-remaining">
@@ -431,7 +439,10 @@ export function ProvidersPage({
                         value={remaining}
                         tone={usageTone(quota.percent)}
                         thin
-                        label={`${provider.name} 剩余额度`}
+                        label={`${provider.name} 剩余额度${
+                codexActive ? '，Codex 正在消耗' : ''
+              }`}
+                        active={codexActive}
                       />
                     )}
                     <span className="pt-sub">
@@ -471,13 +482,17 @@ export function ProvidersPage({
                             : expiry ??
                               (unknown
                                 ? '账户额度待授权查询'
-                                : status === 'warning'
+                                : status === 'exhausted'
                                   ? hasAccountBalance
-                                    ? `余额 ${money(provider.accountBalance ?? 0)} · 建议充值`
-                                    : '额度即将耗尽 · 建议补充'
-                                  : synced
-                                    ? `接口同步${lastSync ? ` · ${lastSync}` : ''}`
-                                    : '额度运行正常')}
+                                    ? `余额 ${money(provider.accountBalance ?? 0)} · 请充值`
+                                    : '额度已耗尽 · 请续费或等待重置'
+                                  : status === 'warning'
+                                    ? hasAccountBalance
+                                      ? `余额 ${money(provider.accountBalance ?? 0)} · 建议充值`
+                                      : '额度即将耗尽 · 建议补充'
+                                    : synced
+                                      ? `接口同步${lastSync ? ` · ${lastSync}` : ''}`
+                                      : '额度运行正常')}
                     </span>
                     {needsLogin && (
                       <button
