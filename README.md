@@ -16,6 +16,8 @@
   - API Key 被标记为 `unlimited_quota` 时不直接当成账户不限额；如果账户额度没有返回，会标记为「额度待确认」
   - 支持 token 接口在开启「允许查询用户额度」后返回的账户余额
   - 展示模型数量，失败时明确显示「同步失败」，不使用旧的假数据
+  - 网络错误 / 超时 / 供应商 5xx 自动重试；Krill 与 Aixor 的 Chrome 读取串行执行，避免争用同一个登录 profile
+  - 每次同步结果写入本地 JSONL 日志，头像菜单「同步日志」可直接查看失败原因与耗时
 - **Krill / Aixor 网页登录助手**
   - 供应商卡片、供应商列表和编辑面板都提供「登录 Krill / 登录 Aixor」按钮
   - 可见的独立 Chrome 窗口只用于首次登录或会话过期；登录完成后窗口可以关闭
@@ -38,7 +40,8 @@
   - 接口同步供应商的额度在编辑面板中只读，避免被手动值覆盖
 - **额度总览**
   - 已用累计额度、有限额度剩余、接口同步状态、活跃 / 待关注供应商
-  - 额度卡片按风险排序：已过期 → 即将到期 → 额度紧张 → 需要登录 → 同步失败 / 待确认 → 正常
+  - 读取 `~/.codex/config.toml` 的当前 `model_provider`，在对应供应商上标记「Codex 在用」，并给它的额度条加燃烧动效
+  - 额度卡片按类型分组，组内按风险排序：已过期 → 额度耗尽 → 即将到期 → 额度紧张 → 需要登录 → 同步失败 / 待确认 → 正常
 - **使用额度**
   - 按供应商拆分的累计用量构成
   - 周期额度、重置日期、账户余额、累计用量与同步状态明细
@@ -115,20 +118,33 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
   - 两者同时存在时在卡片/列表/编辑面板中显示两行：**周期额度 + 钱包余额**
 - Krill 同时返回订阅额度和 `credit_balance_usd` 时，也按两行展示；周期额度决定主状态，钱包容错单独展示
 - 只有周期额度不足/耗尽时才会触发额度紧张；有活跃周期套餐时，钱包余额偏低不会单独把供应商判为异常
+- 周期额度剩余为 0 或账户余额为 0 时状态显示「额度耗尽」，已用 80% 及以上但尚未用完显示「额度紧张」
 - Krill Code 登录后读取 `/api/subscription` 的订阅/余额字段：`total_limit_usd`、`total_used_usd`、`total_remaining_usd`、`quota.window_reset_at` 与 `credit_balance_usd`
   - 有订阅套餐时展示周期额度，否则展示账户余额
 - 网络接口失败保留旧数据；登录态失效时显示「需要登录」而不是伪造余额
 - 不把「API Key 不限额」当成「账户不限额」
 - 所有金额统一按美元展示；其他币种按 `$1 = ¥7.2` 折算仅用于演示数据
 
+## 同步失败与日志
+
+同步失败时不再只有卡片上的一个「同步失败」角标，而是保留可追溯的记录：
+
+- 每次额度同步（成功或失败）写入 `~/.ai-hub/logs/sync-YYYY-MM-DD.jsonl`，保留最近 30 天
+- 查看入口：右上角头像 →「同步日志」，可看到时间、供应商、耗时、尝试次数、错误码与完整失败原因
+- 日志只写本机；接口仅接受 loopback 请求。写入前会脱敏 `sk-*`、`nb_*`、`Bearer` 与 JWT，不会记录 API Key
+- PixelLab 由浏览器直连，失败时会通过 `/api/cc-switch/log` 汇总到同一份日志
+- 重试策略：网络错误 / HTTP 408/429/5xx 最多尝试 3 次（超时最多 2 次）；Chrome 登录态读取最多尝试 2 次；401/404 等配置或鉴权错误不重试
+- 页面重新可见且上次有失败时，延迟 1.5 秒再同步；系统唤醒或网络恢复（`online`）后会再自动重试，避免唤醒瞬间把全部供应商标记为失败
+- 若仍是持续失败，日志中的 `code`（如 `ENOTFOUND`、`ECONNRESET`、`UND_ERR_CONNECT_TIMEOUT`）可直接区分 DNS / 代理 / 超时问题
+
 ## 数据流与安全
 
-1. 浏览器请求同源的 `/api/cc-switch/providers`、`/api/cc-switch/usage` 和 `/api/cc-switch/login/*`。
+1. 浏览器请求同源的 `/api/cc-switch/providers`、`/api/cc-switch/usage`、`/api/codex/current`、`/api/cc-switch/logs` 和 `/api/cc-switch/login/*`。
 2. 本地 Vite 中间件以只读方式打开 `~/.cc-switch/cc-switch.db`，使用其中的 API Key 请求 New API 风格额度接口。
 3. 对 Krill Code，本地服务启动独立的 Chrome 登录窗口；登录完成后通过 DevTools 协议在 Krill 页面内调用额度接口，JWT 不落 AI Hub 前端。
 4. 浏览器不直接请求供应商后台；额度数据由本地服务转发。
 5. 供应商配置与导入时得到的 API Key 会保存在当前浏览器 `localStorage`；导出的 JSON 会剔除 `apiKey`，只保留 `hasApiKey`。
-6. 本地导入、额度查询与登录接口只接受 loopback 请求，并设置 `no-store`。
+6. 本地导入、Codex 当前供应商、额度查询、同步日志与登录接口只接受 loopback 请求，并设置 `no-store`。
 
 注意：
 
@@ -148,9 +164,11 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
 ## 技术结构
 
 - React 19 + TypeScript + Vite
-- `vite-plugins/cc-switch.ts`：本地只读 CC Switch 桥接 + 供应商额度查询代理 + 登录路由
+- `vite-plugins/cc-switch.ts`：本地只读 CC Switch 桥接 + 供应商额度查询代理 + 登录 / 日志路由
+- `vite-plugins/sync-log.ts`：同步 JSONL 日志、脱敏、30 天保留与读取接口
 - `vite-plugins/krill.ts`：独立 Chrome 登录窗口，Krill `/api/subscription` 与 Aixor `/api/user/auth/refresh` + `/api/user/self` 读取
 - `src/billing.ts`：额度快照解析、周期计算、Krill 账户数据与登录状态映射
+- `src/syncLog.ts` / `src/components/SyncLogDialog.tsx`：浏览器侧日志上报与「同步日志」查看器
 - `src/components/LoginDialog.tsx`：登录助手交互与轮询提示
 - `src/ccSwitch.ts`：CC Switch 配置到应用供应商模型的映射
 - `src/pages/Overview.tsx` / `Providers.tsx` / `Usage.tsx`
