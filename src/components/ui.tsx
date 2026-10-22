@@ -42,6 +42,7 @@ export function StatusBadge({ status }: { status: ProviderStatus }) {
   )
 }
 
+/** 按「已用比例」定色：用得越多越危险（进度条本身显示剩余比例）。 */
 export function usageTone(percent: number | null) {
   if (percent === null) return 'ok' as const
   if (percent >= 90) return 'danger' as const

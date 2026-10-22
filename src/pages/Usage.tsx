@@ -12,6 +12,7 @@ import {
   loginBrand,
   logoText,
   relativeTime,
+  remainingPercent,
   toUSD,
   expiryLabel,
   cx,
@@ -436,7 +437,7 @@ export function UsagePage({
       <section className="usage-detail">
         <SectionHead
           title="额度明细"
-          description="按使用率从高到低排序，点击行可编辑供应商"
+          description="按剩余额度从低到高排序，点击行可编辑供应商"
         >
           <Tabs<Filter>
             value={filter}
@@ -478,13 +479,14 @@ export function UsagePage({
               <div className="ut-head">
                 <span>供应商</span>
                 <span>类型</span>
-                <span>额度使用</span>
+                <span>剩余额度</span>
                 <span>可用 / 余额</span>
                 <span>重置与同步</span>
                 <span>状态</span>
               </div>
               {rows.map((provider) => {
                 const quota = getQuotaState(provider)
+                const remaining = remainingPercent(quota.percent)
                 const status = getStatus(provider)
                 const expiry = expiryLabel(provider)
                 const synced = isInterfaceSynced(provider)
@@ -593,11 +595,11 @@ export function UsagePage({
                             </>
                           ) : (
                             <>
-                              {formatPercent(quota.percent)}
+                              {formatPercent(remaining)}
                               {quota.total !== null && (
                                 <em>
                                   {' '}
-                                  · {formatQuota(quota.used, provider)} /{' '}
+                                  · 已用 {formatQuota(quota.used, provider)} /{' '}
                                   {formatQuota(quota.total, provider)}
                                 </em>
                               )}
@@ -648,10 +650,10 @@ export function UsagePage({
                         </div>
                       ) : (
                         <ProgressBar
-                          value={quota.percent}
+                          value={remaining}
                           tone={usageTone(quota.percent)}
                           thin
-                          label={`${provider.name} 额度使用率`}
+                          label={`${provider.name} 剩余额度`}
                         />
                       )}
                       {hasBoth && (

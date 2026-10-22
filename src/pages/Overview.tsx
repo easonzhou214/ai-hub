@@ -214,7 +214,7 @@ export function Overview({
       <section className="providers-section">
         <SectionHead
           title="供应商额度"
-          description="按使用率排序，优先展示即将到期、额度紧张或待确认的供应商"
+          description="按剩余额度从低到高排序，优先展示额度紧张、即将到期或待确认的供应商"
         >
           <Tabs<Filter>
             value={filter}

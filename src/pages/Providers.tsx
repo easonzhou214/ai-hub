@@ -12,6 +12,7 @@ import {
   logoText,
   expiryLabel,
   relativeTime,
+  remainingPercent,
   cx,
 } from '../utils'
 import {
@@ -246,12 +247,13 @@ export function ProvidersPage({
             <div className="pt-head">
               <span>供应商</span>
               <span>套餐 / 类型</span>
-              <span>额度使用</span>
+              <span>剩余额度</span>
               <span>状态</span>
               <span className="pt-head-actions">启用 / 操作</span>
             </div>
             {filtered.map((provider) => {
               const quota = getQuotaState(provider)
+              const remaining = remainingPercent(quota.percent)
               const status = getStatus(provider)
               const expiry = expiryLabel(provider)
               const synced = isInterfaceSynced(provider)
@@ -382,8 +384,7 @@ export function ProvidersPage({
                         </span>
                       ) : (
                         <span className="pt-percent">
-                          {formatPercent(quota.percent)}
-                          <span>{planBased ? '本期已用' : synced ? '累计已用' : '已用'}</span>
+                          {formatPercent(remaining)}
                         </span>
                       )}
                       <span className="pt-remaining">
@@ -427,10 +428,10 @@ export function ProvidersPage({
                       </div>
                     ) : (
                       <ProgressBar
-                        value={quota.percent}
+                        value={remaining}
                         tone={usageTone(quota.percent)}
                         thin
-                        label={`${provider.name} 额度使用率`}
+                        label={`${provider.name} 剩余额度`}
                       />
                     )}
                     <span className="pt-sub">
@@ -441,7 +442,7 @@ export function ProvidersPage({
                         : hasAccountBalance
                           ? '已授权用户额度查询'
                           : quota.total !== null
-                            ? `${formatQuota(quota.used, provider)} / ${formatQuota(quota.total, provider)}`
+                            ? `已用 ${formatQuota(quota.used, provider)} / ${formatQuota(quota.total, provider)}`
                             : `累计已用 ${money(cumulative)}`}
                     </span>
                     {hasPlanQuota && hasWallet && (
@@ -473,9 +474,7 @@ export function ProvidersPage({
                                 : status === 'warning'
                                   ? hasAccountBalance
                                     ? `余额 ${money(provider.accountBalance ?? 0)} · 建议充值`
-                                    : planBased
-                                      ? `本周期已用 ${formatPercent(quota.percent)} · 建议补充`
-                                      : `使用率 ${formatPercent(quota.percent)} · 建议补充`
+                                    : '额度即将耗尽 · 建议补充'
                                   : synced
                                     ? `接口同步${lastSync ? ` · ${lastSync}` : ''}`
                                     : '额度运行正常')}

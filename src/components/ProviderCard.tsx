@@ -13,6 +13,7 @@ import {
   loginBrand,
   logoText,
   relativeTime,
+  remainingPercent,
   resetLabel,
 } from '../utils'
 import {
@@ -35,6 +36,7 @@ export function ProviderCard({
   loginBusy?: boolean
 }) {
   const quota = getQuotaState(provider)
+  const remaining = remainingPercent(quota.percent)
   const status = getStatus(provider)
   const expiry = expiryLabel(provider)
   const synced = isInterfaceSynced(provider)
@@ -114,7 +116,7 @@ export function ProviderCard({
             </span>
           ) : quota.percent !== null ? (
             <span className="pc-usage-value">
-              <strong>{formatPercent(quota.percent)}</strong>
+              <strong>{formatPercent(remaining)}</strong>
               <span className="pc-usage-sep">·</span>
               {availableLabel}
             </span>
@@ -166,9 +168,9 @@ export function ProviderCard({
         ) : quota.percent !== null ? (
           <>
             <ProgressBar
-              value={quota.percent}
+              value={remaining}
               tone={usageTone(quota.percent)}
-              label={`${provider.name} ${quota.label}使用率`}
+              label={`${provider.name} 剩余额度`}
             />
             <div className="pc-usage-meta">
               <span>

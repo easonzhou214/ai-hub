@@ -43,6 +43,15 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), max)
 }
 
+/**
+ * 看板的进度条统一表达「还剩多少」：把已用百分比翻转成剩余百分比。
+ * 颜色仍按已用比例判断（见 usageTone），避免剩余越少反而越绿。
+ */
+export function remainingPercent(percent: number | null): number | null {
+  if (percent === null || !Number.isFinite(percent)) return null
+  return clamp(100 - percent, 0, 100)
+}
+
 export function toUSD(amount: number, currency: Currency) {
   return currency === 'CNY' ? amount / FX_USD_CNY : amount
 }

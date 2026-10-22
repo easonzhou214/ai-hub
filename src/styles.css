@@ -813,6 +813,15 @@ svg {
   border-radius: 999px;
 }
 
+/* 进度条画的是剩余额度，余量见底时用浅色轨道提示，避免空条看起来像没数据。 */
+.progress-warn {
+  background: #fbf3e3;
+}
+
+.progress-danger {
+  background: #fbece9;
+}
+
 .progress-fill {
   display: block;
   height: 100%;
