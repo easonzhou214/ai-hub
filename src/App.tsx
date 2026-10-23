@@ -22,6 +22,7 @@ import {
 } from './auth'
 import {
   applyBillingSnapshot,
+  applySyncFailure,
   fetchProviderBilling,
   readableSyncError,
 } from './billing'
@@ -119,11 +120,7 @@ async function syncImportedProviders(providers: Provider[]) {
         syncedCount += 1
         return applyBillingSnapshot(provider, snapshot)
       } catch (error) {
-        return {
-          ...provider,
-          syncError: readableSyncError(error),
-          updatedAt: new Date().toISOString(),
-        }
+        return applySyncFailure(provider, error)
       }
     }),
   )
@@ -459,11 +456,7 @@ export default function App() {
             setProviders((current) =>
               current.map((provider) =>
                 provider.id === nextProvider.id
-                  ? {
-                      ...provider,
-                      syncError: message,
-                      updatedAt: new Date().toISOString(),
-                    }
+                  ? applySyncFailure(provider, error)
                   : provider,
               ),
             )
@@ -627,11 +620,7 @@ export default function App() {
                   reportSyncFailure(provider, error, Date.now() - startedAt)
                 }
                 failures.push({ name: provider.name, message })
-                return {
-                  ...provider,
-                  syncError: message,
-                  updatedAt: now,
-                }
+                return applySyncFailure(provider, error)
               }
             }
             return simulateProviderUpdate(provider)

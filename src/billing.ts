@@ -105,14 +105,37 @@ export function readableSyncError(error: unknown) {
 const SYNC_REQUEST_ATTEMPTS = 3
 const SYNC_RETRY_DELAYS_MS = [400, 1_200]
 
-class UsageRequestError extends Error {
+/**
+ * Carries the last snapshot the local bridge managed to read. When a sync fails
+ * (helper Chrome asleep, CDP timeout, network blip) the UI can still show the
+ * account's real quota instead of keeping a stale「需要登录」badge.
+ */
+export class UsageRequestError extends Error {
   readonly retryable: boolean
+  readonly cachedPayload?: ProviderUsagePayload
+  readonly cachedAt?: string
 
-  constructor(message: string, retryable = false) {
+  constructor(
+    message: string,
+    retryable = false,
+    cachedPayload?: ProviderUsagePayload,
+    cachedAt?: string,
+  ) {
     super(message)
     this.name = 'UsageRequestError'
     this.retryable = retryable
+    this.cachedPayload = cachedPayload
+    this.cachedAt = cachedAt
   }
+}
+
+function isUsagePayload(value: unknown): value is ProviderUsagePayload {
+  if (!value || typeof value !== 'object') return false
+  const record = value as Record<string, unknown>
+  if (record.sourceType === 'krill' || record.sourceType === 'aixor') {
+    return true
+  }
+  return Boolean(record.token && typeof record.token === 'object')
 }
 
 function sleep(ms: number) {
@@ -176,12 +199,17 @@ async function fetchUsagePayloadOnce(
   }
 
   if (!response.ok) {
+    const record =
+      payload && typeof payload === 'object'
+        ? (payload as {
+            error?: unknown
+            cached?: unknown
+            cachedAt?: unknown
+          })
+        : {}
     const message =
-      payload &&
-      typeof payload === 'object' &&
-      'error' in payload &&
-      typeof (payload as { error?: unknown }).error === 'string'
-        ? (payload as { error: string }).error
+      typeof record.error === 'string'
+        ? record.error
         : `额度查询失败（HTTP ${response.status}）`
     // Upstream 5xx/timeouts are already retried inside the local bridge.
     // Retrying the whole request here would multiply the wait, so only retry
@@ -190,7 +218,12 @@ async function fetchUsagePayloadOnce(
       response.status === 429 ||
       response.status === 503 ||
       response.status === 504
-    throw new UsageRequestError(message, retryable)
+    throw new UsageRequestError(
+      message,
+      retryable,
+      isUsagePayload(record.cached) ? record.cached : undefined,
+      typeof record.cachedAt === 'string' ? record.cachedAt : undefined,
+    )
   }
 
   if (!payload || typeof payload !== 'object') {
@@ -413,6 +446,14 @@ export async function fetchProviderBilling(
   }
 
   const payload = await fetchUsagePayload(provider.sourceId)
+  return parseUsagePayload(provider, payload)
+}
+
+/** Parses both live and cached payloads so every client shows the same data. */
+export function parseUsagePayload(
+  provider: Provider,
+  payload: ProviderUsagePayload,
+): BillingSnapshot {
   if (isWebAccountPayload(payload)) {
     return parseWebAccountSnapshot(provider, payload)
   }
@@ -544,6 +585,32 @@ export function applyBillingSnapshot(
 
 export function isSyncedProvider(provider: Provider) {
   return provider.syncMode === 'openai-billing'
+}
+
+/**
+ * Turns a failed sync into a provider update that keeps the numbers the bridge
+ * last read successfully and only adds the error message. Without this, a
+ * failing read left whatever `loginRequired` flag the browser happened to have
+ * cached, which is why「需要登录」stuck around on other devices.
+ */
+export function applySyncFailure(provider: Provider, error: unknown): Provider {
+  const message = readableSyncError(error)
+  let base = provider
+
+  if (error instanceof UsageRequestError && error.cachedPayload) {
+    const snapshot = parseUsagePayload(provider, error.cachedPayload)
+    const cachedAt = new Date(
+      error.cachedAt ?? snapshot.syncedAt,
+    ).getTime()
+    const current = provider.lastSyncedAt
+      ? new Date(provider.lastSyncedAt).getTime()
+      : Number.NaN
+    if (Number.isNaN(current) || Number.isNaN(cachedAt) || cachedAt >= current) {
+      base = applyBillingSnapshot(provider, snapshot)
+    }
+  }
+
+  return { ...base, syncError: message, updatedAt: new Date().toISOString() }
 }
 
 export function isUnlimitedProvider(provider: Provider) {

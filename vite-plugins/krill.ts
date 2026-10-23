@@ -46,6 +46,20 @@ export class KrillLoginExpiredError extends Error {
   }
 }
 
+/**
+ * The helper browser could not be reached or the injected page request never
+ * produced a usable response. This is NOT "the user is logged out": treating it
+ * as an expired session used to flip cards to「需要登录」after a sleep, a Chrome
+ * restart or a CDP timeout. Callers must keep the last known snapshot and
+ * surface a retryable sync error instead.
+ */
+export class WebHelperUnavailableError extends Error {
+  constructor(message = '登录助手浏览器暂时无法读取登录态') {
+    super(message)
+    this.name = 'WebHelperUnavailableError'
+  }
+}
+
 interface PageTarget {
   type: string
   url: string
@@ -474,14 +488,24 @@ function parseAixorAccount(
   }
 }
 
-export async function readAixorAccountFromBrowser(): Promise<
-  KrillBrowserAccount | null
-> {
+async function requireHelperBrowser() {
   await ensureHeadlessHelper()
-  if (!(await cdpUp())) return null
+  if (!(await cdpUp())) {
+    throw new WebHelperUnavailableError(
+      '登录助手浏览器未启动，暂时无法读取登录态',
+    )
+  }
+}
+
+export async function readAixorAccountFromBrowser(): Promise<KrillBrowserAccount> {
+  await requireHelperBrowser()
   await ensureAixorPageForReading()
   const pages = (await listPages()).filter(isAixorPage)
-  if (pages.length === 0) return null
+  if (pages.length === 0) {
+    throw new WebHelperUnavailableError(
+      '登录助手没有可用的 Aixor 标签页，暂时无法读取登录态',
+    )
+  }
 
   const expression = `(async () => {
     let token = window.__aihub_aixor_token || '';
@@ -538,6 +562,7 @@ export async function readAixorAccountFromBrowser(): Promise<
     return { user, status, subscription, hasToken: !!token, refreshStatus };
   })()`
 
+  let pageFailed = false
   for (const page of pages) {
     try {
       const value = (await cdpEvaluateAsync(
@@ -550,7 +575,10 @@ export async function readAixorAccountFromBrowser(): Promise<
             subscription?: { status?: unknown; payload?: unknown }
           }
         | null
-      if (!value) continue
+      if (!value) {
+        pageFailed = true
+        continue
+      }
       const userStatus = Number(value.user?.status) || 0
       if (userStatus === 401 || userStatus === 403) {
         return { status: userStatus, account: null }
@@ -565,16 +593,24 @@ export async function readAixorAccountFromBrowser(): Promise<
           ),
         }
       }
-      if (userStatus === 0) continue
+      if (userStatus === 0) {
+        pageFailed = true
+        continue
+      }
       throw new Error(`Aixor 额度接口返回 HTTP ${userStatus}`)
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Aixor 额度接口')) {
         throw error
       }
+      pageFailed = true
       // Page may still be redirecting; try the next Aixor tab.
     }
   }
-  return null
+  throw new WebHelperUnavailableError(
+    pageFailed
+      ? '登录助手页面内请求失败，暂时无法读取 Aixor 登录态'
+      : '登录助手暂时无法读取 Aixor 登录态',
+  )
 }
 
 export async function prepareKrillLogin(resetSession = false) {
@@ -798,14 +834,15 @@ export interface KrillBrowserAccount {
  * request inside the page means the browser supplies the same JWT/cookies as
  * the real dashboard, without copying any credential to Node.
  */
-export async function readKrillAccountFromBrowser(): Promise<
-  KrillBrowserAccount | null
-> {
-  await ensureHeadlessHelper()
-  if (!(await cdpUp())) return null
+export async function readKrillAccountFromBrowser(): Promise<KrillBrowserAccount> {
+  await requireHelperBrowser()
   await ensureKrillPageForReading()
   const pages = (await listPages()).filter(isKrillPage)
-  if (pages.length === 0) return null
+  if (pages.length === 0) {
+    throw new WebHelperUnavailableError(
+      '登录助手没有可用的 Krill 标签页，暂时无法读取登录态',
+    )
+  }
 
   const expression = `(async () => {
     try {
@@ -826,13 +863,17 @@ export async function readKrillAccountFromBrowser(): Promise<
     }
   })()`
 
+  let pageFailed = false
   for (const page of pages) {
     try {
       const value = (await cdpEvaluateAsync(
         page.webSocketDebuggerUrl,
         expression,
       )) as { status?: unknown; payload?: unknown } | null
-      if (!value || typeof value !== 'object') continue
+      if (!value || typeof value !== 'object') {
+        pageFailed = true
+        continue
+      }
       const status = Number(value.status) || 0
       if (status === 401 || status === 403) {
         return { status, account: null }
@@ -840,16 +881,24 @@ export async function readKrillAccountFromBrowser(): Promise<
       if (status >= 200 && status < 300) {
         return { status, account: parseKrillAccount(value.payload) }
       }
-      if (status === 0) continue
+      if (status === 0) {
+        pageFailed = true
+        continue
+      }
       throw new Error(`Krill 额度接口返回 HTTP ${status}`)
     } catch (error) {
       if (error instanceof Error && error.message.startsWith('Krill 额度接口')) {
         throw error
       }
+      pageFailed = true
       // Page may still be redirecting; try the next Krill tab.
     }
   }
-  return null
+  throw new WebHelperUnavailableError(
+    pageFailed
+      ? '登录助手页面内请求失败，暂时无法读取 Krill 登录态'
+      : '登录助手暂时无法读取 Krill 登录态',
+  )
 }
 
 export async function fetchKrillAccount(jwt: string): Promise<KrillAccount> {

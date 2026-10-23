@@ -12,9 +12,11 @@ import {
   prepareKrillLogin,
   readAixorAccountFromBrowser,
   readKrillAccountFromBrowser,
+  WebHelperUnavailableError,
   type WebLoginProvider,
 } from './krill'
 import { logSyncEvent, readSyncEvents, SYNC_LOG_DIR } from './sync-log'
+import { getUsageSnapshot, saveUsageSnapshot } from './usage-cache'
 
 /**
  * Local-only bridge to CC Switch, Codex's active provider, and quota endpoints.
@@ -149,6 +151,9 @@ const RETRYABLE_ERROR_CODES = new Set([
  * Auth/config errors (401/404/missing quota endpoint) are returned immediately.
  */
 function isRetryableSyncError(error: unknown) {
+  // A missing/frozen helper browser is transient: retry instead of treating it
+  // as an expired login.
+  if (error instanceof WebHelperUnavailableError) return true
   const { message, code } = describeSyncError(error)
   if (RETRYABLE_ERROR_CODES.has(code)) return true
   if (/\bHTTP (408|425|429|5\d{2})\b/.test(message)) return true
@@ -512,6 +517,12 @@ function findProvider(sourceId: string): CcSwitchProvider | null {
   )
 }
 
+/**
+ * `loginRequired` is only returned when the provider's own API answered
+ * 401/403 inside the logged-in page. Anything else (helper browser down, tab
+ * still loading, CDP timeout) throws, so the caller keeps the previous snapshot
+ * and reports a retryable sync error instead of claiming the session expired.
+ */
 async function readKrillProviderUsage(provider: CcSwitchProvider) {
   const modelCount = await fetchKrillModelCount(
     provider.baseUrl,
@@ -519,29 +530,24 @@ async function readKrillProviderUsage(provider: CcSwitchProvider) {
   )
   const fetchedAt = new Date().toISOString()
 
-  try {
-    const result = await readKrillAccountFromBrowser()
-    if (!result || result.status === 401 || result.status === 403) {
-      return {
-        sourceType: 'krill' as const,
-        loginRequired: true,
-        loginProvider: 'krill' as const,
-        account: null,
-        modelCount,
-        fetchedAt,
-      }
-    }
+  const result = await readKrillAccountFromBrowser()
+  if (result.status === 401 || result.status === 403) {
     return {
       sourceType: 'krill' as const,
-      loginRequired: false,
+      loginRequired: true,
       loginProvider: 'krill' as const,
-      account: result.account,
+      account: null,
       modelCount,
       fetchedAt,
     }
-  } catch (error) {
-    if (error instanceof Error) throw error
-    throw new Error('无法读取 Krill 账户额度')
+  }
+  return {
+    sourceType: 'krill' as const,
+    loginRequired: false,
+    loginProvider: 'krill' as const,
+    account: result.account,
+    modelCount,
+    fetchedAt,
   }
 }
 
@@ -552,29 +558,24 @@ async function readAixorProviderUsage(provider: CcSwitchProvider) {
   )
   const fetchedAt = new Date().toISOString()
 
-  try {
-    const result = await readAixorAccountFromBrowser()
-    if (!result || result.status === 401 || result.status === 403) {
-      return {
-        sourceType: 'aixor' as const,
-        loginRequired: true,
-        loginProvider: 'aixor' as const,
-        account: null,
-        modelCount,
-        fetchedAt,
-      }
-    }
+  const result = await readAixorAccountFromBrowser()
+  if (result.status === 401 || result.status === 403) {
     return {
       sourceType: 'aixor' as const,
-      loginRequired: false,
+      loginRequired: true,
       loginProvider: 'aixor' as const,
-      account: result.account,
+      account: null,
       modelCount,
       fetchedAt,
     }
-  } catch (error) {
-    if (error instanceof Error) throw error
-    throw new Error('无法读取 Aixor 账户额度')
+  }
+  return {
+    sourceType: 'aixor' as const,
+    loginRequired: false,
+    loginProvider: 'aixor' as const,
+    account: result.account,
+    modelCount,
+    fetchedAt,
   }
 }
 
@@ -597,10 +598,16 @@ async function handleLoginStart(
     }
 
     await prepareWebLogin(kind)
-    const result = await readWebAccount(kind)
-    if (result?.status && result.status >= 200 && result.status < 300) {
-      sendJson(response, 200, { status: 'authenticated' })
-      return
+    try {
+      const result = await readWebAccount(kind)
+      if (result.status >= 200 && result.status < 300) {
+        sendJson(response, 200, { status: 'authenticated' })
+        return
+      }
+    } catch (error) {
+      // The window was just opened, so the page may still be loading. This is
+      // "pending", not an error and definitely not an expired session.
+      if (!(error instanceof WebHelperUnavailableError)) throw error
     }
     sendJson(response, 200, { status: 'pending' })
   } catch (error) {
@@ -635,14 +642,15 @@ async function handleLoginStatus(
       return
     }
 
-    const result = await readWebAccount(kind)
-    if (result?.status && result.status >= 200 && result.status < 300) {
-      sendJson(response, 200, { status: 'authenticated' })
-      return
-    }
-    if (result?.status === 401 || result?.status === 403) {
-      sendJson(response, 200, { status: 'pending' })
-      return
+    try {
+      const result = await readWebAccount(kind)
+      if (result.status >= 200 && result.status < 300) {
+        sendJson(response, 200, { status: 'authenticated' })
+        return
+      }
+    } catch (error) {
+      // Keep polling while the login page loads; only real errors abort.
+      if (!(error instanceof WebHelperUnavailableError)) throw error
     }
 
     sendJson(response, 200, { status: 'pending' })
@@ -834,6 +842,9 @@ async function handleUsage(
         typeof payload === 'object' &&
         (payload as { loginRequired?: unknown }).loginRequired === true,
     )
+    // Remember what we actually read so every client (and every device) can
+    // fall back to the same snapshot when a later read fails.
+    saveUsageSnapshot(sourceId, payload)
     logSyncEvent({
       level: loginRequired ? 'warn' : 'info',
       layer: 'server',
@@ -858,10 +869,15 @@ async function handleUsage(
       message: message || '无法读取供应商额度',
       code: code || undefined,
     })
+    const cached = getUsageSnapshot(sourceId)
     sendJson(response, 502, {
       error: message || '无法读取供应商额度',
       code: code || undefined,
       retryable: isRetryableSyncError(error),
+      // The last snapshot this machine managed to read. Clients apply it and
+      // only show the sync error, instead of keeping a stale「需要登录」state.
+      cached: cached?.payload ?? null,
+      cachedAt: cached?.cachedAt ?? null,
     })
   }
 }
