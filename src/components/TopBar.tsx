@@ -88,18 +88,6 @@ export function TopBar({
       </div>
 
       <div className="topbar-right" ref={actionsRef}>
-        <span
-          className={cx('storage-chip', storageMode)}
-          title={
-            storageMode === 'server'
-              ? '供应商、额度与账号保存在服务端，同一地址下多台设备共用一份数据'
-              : '未连接服务端，数据只保存在当前浏览器'
-          }
-        >
-          <span className="storage-chip-dot" aria-hidden="true" />
-          {storageMode === 'server' ? '服务端已连接' : '仅本机'}
-        </span>
-
         <div className="auto-sync" title="开启后每 5 分钟自动同步一次">
           <span className="auto-sync-label">自动同步</span>
           <Switch
@@ -108,16 +96,13 @@ export function TopBar({
             label="自动同步供应商额度"
           />
           <span className="auto-sync-time">
-            <span className="auto-sync-sep" aria-hidden="true">
-              ·
-            </span>
             上次同步 {relativeTime(lastSyncedAt)}
           </span>
         </div>
 
         <button
           type="button"
-          className="btn btn-secondary btn-sm sync-button"
+          className="btn btn-ghost btn-sm sync-button"
           onClick={onRefresh}
           disabled={syncing}
           aria-label="同步供应商额度"
