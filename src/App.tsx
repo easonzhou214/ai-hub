@@ -10,6 +10,7 @@ import { SyncLogDialog } from './components/SyncLogDialog'
 import { TopBar } from './components/TopBar'
 import {
   authenticate,
+  changePassword,
   clearSession,
   createAccount,
   deleteAccount,
@@ -35,7 +36,6 @@ import {
   findCodexProvider,
   type CodexCurrentSnapshot,
 } from './codex'
-import { createSeedProviders, createSeedSyncedAt } from './data'
 import { useHubState } from './hubState'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
@@ -49,7 +49,6 @@ import type {
   ProviderType,
 } from './types'
 import {
-  clamp,
   isInterfaceSynced,
   loginBrand,
   providerAlerts,
@@ -76,39 +75,6 @@ function isProviderArray(value: unknown): value is Provider[] {
           (item as Provider).type === 'image'),
     )
   )
-}
-
-function roundMoney(value: number) {
-  return Math.round(value * 100) / 100
-}
-
-function simulateProviderUpdate(provider: Provider): Provider {
-  if (!provider.enabled) return provider
-  const now = new Date().toISOString()
-  const addedCalls =
-    Math.max(2, Math.round(provider.callsToday * 0.04)) +
-    (provider.callsToday % 5)
-  if (provider.billing === 'quota') {
-    const increment = provider.quotaTotal * (0.008 + Math.random() * 0.01)
-    return {
-      ...provider,
-      quotaUsed: roundMoney(
-        clamp(provider.quotaUsed + increment, 0, provider.quotaTotal),
-      ),
-      callsToday: provider.callsToday + addedCalls,
-      updatedAt: now,
-    }
-  }
-  const base = provider.monthlyBudget || Math.max(provider.balance, 10)
-  const spend = base * (0.004 + Math.random() * 0.007)
-  const deducted = Math.min(provider.balance, spend)
-  return {
-    ...provider,
-    balance: roundMoney(Math.max(provider.balance - deducted, 0)),
-    monthlySpend: roundMoney(provider.monthlySpend + deducted),
-    callsToday: provider.callsToday + addedCalls,
-    updatedAt: now,
-  }
 }
 
 async function syncImportedProviders(providers: Provider[]) {
@@ -161,7 +127,9 @@ export default function App() {
   const [page, setPage] = useState<PageKey>(parsePageFromHash)
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [drawerPreset, setDrawerPreset] = useState<ProviderPreset | null>(null)
-  const [editing, setEditing] = useState<Provider | null>(null)
+  // 只存 id：编辑期间同步会更新 providers，抽屉必须看到最新的那一份，
+  // 否则保存时会把刚同步到的额度写回旧值。
+  const [editingId, setEditingId] = useState<string | null>(null)
   const [initialType, setInitialType] = useState<ProviderType>('coding')
   const [syncing, setSyncing] = useState(false)
   const [login, setLogin] = useState<LoginUiState | null>(null)
@@ -233,6 +201,19 @@ export default function App() {
     [notify, requestHubSave],
   )
 
+  const handleChangePassword = useCallback(
+    (current: string, next: string) => {
+      if (!user) return '请先登录'
+      const message = changePassword(user.id, current, next)
+      if (message) return message
+      setAccounts(getAccounts())
+      requestHubSave()
+      notify('密码已更新')
+      return null
+    },
+    [notify, requestHubSave, user],
+  )
+
   const handlePushLocal = useCallback(async () => {
     const ok = await pushLocal()
     notify(
@@ -285,26 +266,19 @@ export default function App() {
         const imported = configs.map((config, index) =>
           ccSwitchProviderToProvider(config, undefined, index),
         )
-        setBootMessage('正在读取供应商额度…')
-        const result = await syncImportedProviders(imported)
-        if (cancelled) return
-
-        setProviders(result.providers)
-        if (result.syncedCount > 0) {
-          setLastSyncedAt(new Date().toISOString())
-        }
+        // 先进界面，额度交给自动同步在后台补齐：Krill / Aixor 首次读取要拉起
+        // headless Chrome，多个供应商串行下来可能要几十秒，没必要把启动页堵住。
+        setProviders(imported)
         setBooted(true)
         notify(
-          result.syncedCount > 0
-            ? `已从 CC Switch 接入 ${result.providers.length} 个供应商`
-            : `已接入 ${result.providers.length} 个供应商，额度同步待重试`,
+          `已从 CC Switch 接入 ${imported.length} 个供应商，正在同步额度…`,
         )
-      } catch {
+      } catch (error) {
         if (cancelled) return
-        setProviders(createSeedProviders())
-        setLastSyncedAt(createSeedSyncedAt())
+        // 读不到 CC Switch 时保持空态：以前这里会塞进 8 个假的供应商和
+        // 假额度，看起来像真实数据，反而误导判断。
         setBooted(true)
-        notify('未读取到 CC Switch 配置，已载入演示数据')
+        notify(`未读取到 CC Switch 配置：${readableSyncError(error)}`, 'error')
       }
     }
 
@@ -393,7 +367,7 @@ export default function App() {
 
   const openAdd = useCallback(
     (type?: ProviderType, preset?: ProviderPreset) => {
-      setEditing(null)
+      setEditingId(null)
       setInitialType(type ?? (preset === 'pixellab' ? 'image' : 'coding'))
       setDrawerPreset(preset ?? null)
       setDrawerOpen(true)
@@ -402,7 +376,7 @@ export default function App() {
   )
 
   const openEdit = useCallback((provider: Provider) => {
-    setEditing(provider)
+    setEditingId(provider.id)
     setInitialType(provider.type)
     setDrawerPreset(null)
     setDrawerOpen(true)
@@ -411,7 +385,21 @@ export default function App() {
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false)
     setDrawerPreset(null)
+    setEditingId(null)
   }, [])
+
+  const editing = useMemo(
+    () => providers.find((provider) => provider.id === editingId) ?? null,
+    [editingId, providers],
+  )
+
+  // 正在编辑的供应商被删掉（本机或另一台设备）时收起抽屉。
+  useEffect(() => {
+    if (editingId && !editing) {
+      setDrawerOpen(false)
+      setEditingId(null)
+    }
+  }, [editing, editingId])
 
   const handleSave = useCallback(
     (draft: ProviderDraft) => {
@@ -431,7 +419,7 @@ export default function App() {
           : [nextProvider, ...current],
       )
       setDrawerOpen(false)
-      setEditing(null)
+      setEditingId(null)
       notify(isEdit ? '已保存供应商配置' : '已添加供应商')
 
       // PixelLab 没有 CC Switch 缓存，保存后立刻拉一次额度，避免用户还要等
@@ -495,34 +483,16 @@ export default function App() {
           setProviders((current) =>
             current.filter((item) => item.id !== provider.id),
           )
-          if (editing?.id === provider.id) {
+          if (editingId === provider.id) {
             setDrawerOpen(false)
-            setEditing(null)
+            setEditingId(null)
           }
           notify(`已删除 ${provider.name}`)
         },
       })
     },
-    [editing, notify, setProviders],
+    [editingId, notify, setProviders],
   )
-
-  const handleReset = useCallback(() => {
-    setConfirm({
-      title: '重置为演示数据？',
-      description:
-        '会恢复 8 个示例供应商与初始额度，当前浏览器里的配置将被覆盖。之后仍可从 CC Switch 重新导入。',
-      confirmLabel: '恢复演示数据',
-      tone: 'neutral',
-      onConfirm: () => {
-        setProviders(createSeedProviders())
-        setLastSyncedAt(createSeedSyncedAt())
-        setDrawerOpen(false)
-        setEditing(null)
-        navigate('overview')
-        notify('已恢复演示数据')
-      },
-    })
-  }, [navigate, notify, setLastSyncedAt, setProviders])
 
   const handleExport = useCallback(() => {
     const payload = {
@@ -603,30 +573,42 @@ export default function App() {
         let realSynced = 0
         const failures: Array<{ name: string; message: string }> = []
         const now = new Date().toISOString()
+        // 记下开始时的版本号：只有同步期间没被用户改过的供应商才允许覆盖，
+        // 否则整体 setProviders(updated) 会吞掉这期间的开关/编辑操作。
+        const baseVersions = new Map(
+          providers.map((provider) => [provider.id, provider.updatedAt]),
+        )
         const updated = await Promise.all(
           providers.map(async (provider) => {
             if (!provider.enabled) return provider
-            if (isInterfaceSynced(provider)) {
-              const startedAt = Date.now()
-              try {
-                const snapshot = await fetchProviderBilling(provider)
-                realSynced += 1
-                return applyBillingSnapshot(provider, snapshot)
-              } catch (error) {
-                const message = readableSyncError(error)
-                const raw =
-                  error instanceof Error ? error.message : String(error ?? '')
-                if (provider.syncMode === 'pixellab' || /无法连接本地/.test(raw)) {
-                  reportSyncFailure(provider, error, Date.now() - startedAt)
-                }
-                failures.push({ name: provider.name, message })
-                return applySyncFailure(provider, error)
+            if (!isInterfaceSynced(provider)) return provider
+            const startedAt = Date.now()
+            try {
+              const snapshot = await fetchProviderBilling(provider)
+              realSynced += 1
+              return applyBillingSnapshot(provider, snapshot)
+            } catch (error) {
+              const message = readableSyncError(error)
+              const raw =
+                error instanceof Error ? error.message : String(error ?? '')
+              if (provider.syncMode === 'pixellab' || /无法连接本地/.test(raw)) {
+                reportSyncFailure(provider, error, Date.now() - startedAt)
               }
+              failures.push({ name: provider.name, message })
+              return applySyncFailure(provider, error)
             }
-            return simulateProviderUpdate(provider)
           }),
         )
-        setProviders(updated)
+        const syncedById = new Map(updated.map((provider) => [provider.id, provider]))
+        setProviders((current) =>
+          current.map((provider) => {
+            const next = syncedById.get(provider.id)
+            if (!next) return provider
+            const base = baseVersions.get(provider.id)
+            if (base !== provider.updatedAt) return provider
+            return next
+          }),
+        )
         setLastSyncedAt(now)
         void refreshCodexCurrent()
         if (!silent) {
@@ -645,9 +627,7 @@ export default function App() {
           } else if (realSynced > 0) {
             notify(`已同步 ${realSynced} 个接口供应商的最新额度`)
           } else {
-            notify(
-              `已同步 ${providers.filter((provider) => provider.enabled).length} 个供应商的额度`,
-            )
+            notify('没有可自动同步的接口供应商，手动录入的额度不受影响')
           }
         }
       } finally {
@@ -933,7 +913,6 @@ export default function App() {
         }}
         onExport={handleExport}
         onOpenLogs={() => setLogsOpen(true)}
-        onReset={handleReset}
         onManageAccounts={() => setAccountsOpen(true)}
         onLogout={handleLogout}
       />
@@ -994,6 +973,7 @@ export default function App() {
         loginBusy={
           Boolean(loginBusyId && editing?.sourceId === loginBusyId)
         }
+        escapeDisabled={Boolean(login)}
       />
 
       <ConfirmDialog state={confirm} onCancel={() => setConfirm(null)} />
@@ -1003,9 +983,11 @@ export default function App() {
       <AccountManager
         open={accountsOpen}
         accounts={accounts}
+        currentUser={user}
         onClose={() => setAccountsOpen(false)}
         onCreate={handleCreateAccount}
         onDelete={handleDeleteAccount}
+        onChangePassword={handleChangePassword}
       />
 
       <LoginDialog

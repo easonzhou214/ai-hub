@@ -1,5 +1,6 @@
-import type { Cycle, Provider } from './types'
+import type { Currency, Cycle, Provider } from './types'
 import { fetchPixellabBalance, type PixellabBalance } from './pixellab'
+import { withRetry } from './net'
 
 /**
  * Quota data comes from the provider's New API compatible endpoints:
@@ -17,8 +18,8 @@ import { fetchPixellabBalance, type PixellabBalance } from './pixellab'
 export interface BillingSnapshot {
   quotaTotal: number
   quotaUsed: number
-  unlimited: boolean
   limitUnknown: boolean
+  /** 供应商把 API Key 标记为 unlimited_quota；是否真的不限额由 apply 时判定 */
   keyUnlimited: boolean
   lifetimeUsed: number
   accountBalance?: number
@@ -26,6 +27,8 @@ export interface BillingSnapshot {
   planName?: string
   /** 额度单位，缺省为美元 */
   quotaUnit?: 'usd' | 'generation'
+  /** 额度计价币种，来自上游 quota_display_type */
+  currency?: Currency
   modelCount: number
   resetAt: string
   cycle: Cycle
@@ -96,7 +99,8 @@ export function readableSyncError(error: unknown) {
   if (/fetch failed|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|UND_ERR/i.test(raw)) {
     return '无法连接供应商接口，请检查网络或代理'
   }
-  if (/超时|timed out/i.test(raw)) {
+  // 中文消息在上面已经原样返回（保留上游错误码），这里只兜住英文超时。
+  if (/timed out|timeout/i.test(raw)) {
     return '接口响应超时，请稍后重试'
   }
   return raw.slice(0, 160)
@@ -104,6 +108,7 @@ export function readableSyncError(error: unknown) {
 
 const SYNC_REQUEST_ATTEMPTS = 3
 const SYNC_RETRY_DELAYS_MS = [400, 1_200]
+const SYNC_REQUEST_TIMEOUT_MS = 20_000
 
 /**
  * Carries the last snapshot the local bridge managed to read. When a sync fails
@@ -138,21 +143,27 @@ function isUsagePayload(value: unknown): value is ProviderUsagePayload {
   return Boolean(record.token && typeof record.token === 'object')
 }
 
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function networkAvailable() {
-  return typeof navigator === 'undefined' || navigator.onLine !== false
-}
-
 function roundMoney(value: number) {
   return Math.round(value * 100) / 100
 }
 
 function toCycle(period: string | null): Cycle {
+  if (period === 'daily') return 'day'
   if (period === 'weekly') return 'week'
   return 'month'
+}
+
+/** 按周期推进一个月，月末（1/31）不溢出到下下个月。 */
+function addMonth(date: Date) {
+  const day = date.getDate()
+  date.setDate(1)
+  date.setMonth(date.getMonth() + 1)
+  const lastDay = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    0,
+  ).getDate()
+  date.setDate(Math.min(day, lastDay))
 }
 
 function nextReset(periodStart: number, period: string | null) {
@@ -164,7 +175,7 @@ function nextReset(periodStart: number, period: string | null) {
   } else if (period === 'daily') {
     date.setDate(date.getDate() + 1)
   } else {
-    date.setMonth(date.getMonth() + 1)
+    addMonth(date)
   }
   return date.toISOString()
 }
@@ -182,6 +193,8 @@ async function fetchUsagePayloadOnce(
       },
       body: JSON.stringify({ sourceId }),
       cache: 'no-store',
+      // 桥接进程卡住时不要挂到浏览器 TCP 超时。
+      signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
     })
   } catch {
     throw new UsageRequestError(
@@ -229,8 +242,16 @@ async function fetchUsagePayloadOnce(
   if (!payload || typeof payload !== 'object') {
     throw new UsageRequestError('本地额度查询返回为空', true)
   }
+  // 成功响应也要验形状：早先只判断了 object，token 缺失时会在解析层抛
+  // 「Cannot read properties of undefined」，直接漏给用户看。
+  if (!isUsagePayload(payload)) {
+    throw new UsageRequestError(
+      '本地额度查询返回的数据结构无法识别，请更新本地服务后重试',
+      false,
+    )
+  }
 
-  return payload as ProviderUsagePayload
+  return payload
 }
 
 /**
@@ -241,24 +262,11 @@ async function fetchUsagePayloadOnce(
 async function fetchUsagePayload(
   sourceId: string,
 ): Promise<ProviderUsagePayload> {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= SYNC_REQUEST_ATTEMPTS; attempt += 1) {
-    try {
-      return await fetchUsagePayloadOnce(sourceId)
-    } catch (error) {
-      lastError = error
-      const retryable = error instanceof UsageRequestError && error.retryable
-      if (
-        !retryable ||
-        attempt === SYNC_REQUEST_ATTEMPTS ||
-        !networkAvailable()
-      ) {
-        break
-      }
-      await sleep(SYNC_RETRY_DELAYS_MS[attempt - 1] ?? 1_200)
-    }
-  }
-  throw lastError
+  return withRetry(() => fetchUsagePayloadOnce(sourceId), {
+    attempts: SYNC_REQUEST_ATTEMPTS,
+    delays: SYNC_RETRY_DELAYS_MS,
+    retryable: (error) => error instanceof UsageRequestError && error.retryable,
+  })
 }
 
 function isWebAccountPayload(
@@ -281,7 +289,6 @@ function parseWebAccountSnapshot(
     return {
       quotaTotal: 0,
       quotaUsed: provider.lifetimeUsed ?? provider.quotaUsed ?? 0,
-      unlimited: false,
       limitUnknown: false,
       keyUnlimited: false,
       lifetimeUsed: provider.lifetimeUsed ?? 0,
@@ -299,7 +306,6 @@ function parseWebAccountSnapshot(
     return {
       quotaTotal: 0,
       quotaUsed: provider.lifetimeUsed ?? 0,
-      unlimited: false,
       limitUnknown: true,
       keyUnlimited: false,
       lifetimeUsed: provider.lifetimeUsed ?? 0,
@@ -335,7 +341,6 @@ function parseWebAccountSnapshot(
     return {
       quotaTotal: roundMoney(total),
       quotaUsed: roundMoney(used),
-      unlimited: false,
       limitUnknown: false,
       keyUnlimited: false,
       lifetimeUsed: roundMoney(lifetime),
@@ -361,7 +366,6 @@ function parseWebAccountSnapshot(
     return {
       quotaTotal: 0,
       quotaUsed: 0,
-      unlimited: false,
       limitUnknown: false,
       keyUnlimited: false,
       lifetimeUsed: roundMoney(lifetime),
@@ -378,7 +382,6 @@ function parseWebAccountSnapshot(
   return {
     quotaTotal: 0,
     quotaUsed: 0,
-    unlimited: false,
     limitUnknown: true,
     keyUnlimited: false,
     lifetimeUsed: 0,
@@ -391,12 +394,11 @@ function parseWebAccountSnapshot(
   }
 }
 
-export function parsePixellabSnapshot(
+function parsePixellabSnapshot(
   provider: Provider,
   balance: PixellabBalance,
 ): BillingSnapshot {
   const base = {
-    unlimited: false,
     limitUnknown: false,
     keyUnlimited: false,
     accountBalance: balance.creditsUsd,
@@ -471,6 +473,11 @@ export function parseUsagePayload(
   }
 
   const tokenUsed = toAmount(token.totalUsed)
+  // 上游 quota_display_type 决定计价币种；只认明确的 CNY，其余按美元处理。
+  const currency: Currency =
+    String(newApiPayload.displayType ?? '').toUpperCase() === 'CNY'
+      ? 'CNY'
+      : 'USD'
   const syncedAt = newApiPayload.fetchedAt || new Date().toISOString()
   const modelCount = Number.isFinite(newApiPayload.modelCount)
     ? newApiPayload.modelCount
@@ -488,7 +495,7 @@ export function parseUsagePayload(
     return {
       quotaTotal: roundMoney(total),
       quotaUsed: roundMoney(Math.max(total - available, 0)),
-      unlimited: false,
+      currency,
       limitUnknown: false,
       keyUnlimited: token.unlimitedQuota,
       lifetimeUsed: roundMoney(tokenUsed),
@@ -513,7 +520,7 @@ export function parseUsagePayload(
     return {
       quotaTotal: 0,
       quotaUsed: roundMoney(used),
-      unlimited: false,
+      currency,
       limitUnknown: false,
       keyUnlimited: token.unlimitedQuota,
       lifetimeUsed: roundMoney(used),
@@ -531,7 +538,7 @@ export function parseUsagePayload(
   return {
     quotaTotal: 0,
     quotaUsed: roundMoney(tokenUsed),
-    unlimited: false,
+    currency,
     limitUnknown: true,
     keyUnlimited: token.unlimitedQuota,
     lifetimeUsed: roundMoney(tokenUsed),
@@ -559,13 +566,20 @@ export function applyBillingSnapshot(
     }
   }
 
+  // unlimited_quota 只说明 Key 本身不限额；只有连账户周期额度和余额都没有时，
+  // 才能对外宣称「不限额度」，否则仍按真实额度展示。
+  const unlimited =
+    snapshot.keyUnlimited &&
+    snapshot.quotaTotal <= 0 &&
+    snapshot.accountBalance === undefined
+
   return {
     ...provider,
     billing: 'quota',
-    currency: 'USD',
+    currency: snapshot.currency ?? provider.currency,
     quotaTotal: snapshot.quotaTotal,
     quotaUsed: snapshot.quotaUsed,
-    unlimited: snapshot.unlimited,
+    unlimited,
     limitUnknown: snapshot.limitUnknown,
     keyUnlimited: snapshot.keyUnlimited,
     lifetimeUsed: snapshot.lifetimeUsed,
@@ -581,10 +595,6 @@ export function applyBillingSnapshot(
     syncError: '',
     updatedAt: snapshot.syncedAt,
   }
-}
-
-export function isSyncedProvider(provider: Provider) {
-  return provider.syncMode === 'openai-billing'
 }
 
 /**
@@ -611,8 +621,4 @@ export function applySyncFailure(provider: Provider, error: unknown): Provider {
   }
 
   return { ...base, syncError: message, updatedAt: new Date().toISOString() }
-}
-
-export function isUnlimitedProvider(provider: Provider) {
-  return Boolean(provider.unlimited)
 }

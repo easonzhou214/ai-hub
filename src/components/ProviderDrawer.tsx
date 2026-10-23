@@ -6,6 +6,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react'
+import { useEscapeKey } from '../hooks'
 import { Icon } from '../icons'
 import type {
   BillingMode,
@@ -22,6 +23,7 @@ import {
   TYPE_DESCRIPTION,
   TYPE_LABEL,
   cx,
+  cycleLabel,
   formatFullDate,
   formatMoney,
   formatQuota,
@@ -66,6 +68,8 @@ interface ProviderDrawerProps {
   onSave: (draft: ProviderDraft) => void
   onLogin?: (provider: Provider) => void
   loginBusy?: boolean
+  /** 上层弹窗打开时让出 Esc 键 */
+  escapeDisabled?: boolean
 }
 
 const TYPE_DEFAULT_COLOR: Record<ProviderType, string> = {
@@ -132,7 +136,10 @@ function fromProvider(provider: Provider): FormState {
     cycle: provider.cycle,
     resetAt: provider.resetAt ? formatFullDate(provider.resetAt) : '',
     expiresAt: provider.expiresAt ? formatFullDate(provider.expiresAt) : '',
-    balance: provider.balance ? String(provider.balance) : '',
+    balance:
+      provider.balance === 0 || provider.balance
+        ? String(provider.balance)
+        : '',
     monthlySpend: String(provider.monthlySpend ?? 0),
     monthlyBudget: provider.monthlyBudget
       ? String(provider.monthlyBudget)
@@ -164,6 +171,7 @@ export function ProviderDrawer({
   onSave,
   onLogin,
   loginBusy = false,
+  escapeDisabled = false,
 }: ProviderDrawerProps) {
   const uid = useId()
   const [form, setForm] = useState<FormState>(() => emptyForm(initialType))
@@ -197,21 +205,23 @@ export function ProviderDrawer({
     return () => {
       if (timer) window.clearTimeout(timer)
     }
-  }, [open, provider, initialType, preset])
+    // 只依赖 provider.id：同步会更新 provider 对象，若把它放进依赖，用户
+    // 正在填写的内容会被重置；而 provider 本身已经是最新对象，保存时够用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, provider?.id, initialType, preset])
 
   useEffect(() => {
     if (!open) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKey)
     return () => {
       document.body.style.overflow = previousOverflow
-      document.removeEventListener('keydown', handleKey)
     }
-  }, [open, onClose])
+  }, [open])
+
+  // 抽屉里可以打开登录弹窗，此时 Esc 应该只关弹窗，不能把抽屉和未保存的
+  // 修改一起关掉，所以由父组件传入 escapeDisabled 让位。
+  useEscapeKey(open && !escapeDisabled, onClose)
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) => {
     setForm((current) => ({ ...current, [key]: value }))
@@ -386,7 +396,8 @@ export function ProviderDrawer({
       loginProvider: provider?.loginProvider,
       loginRequired: provider?.loginRequired,
       lastSyncedAt: provider?.lastSyncedAt ?? '',
-      syncError: '',
+      // 保存配置不修复同步故障，保留原有错误直到下一次同步成功。
+      syncError: provider?.syncError ?? '',
       source: provider?.source,
       sourceId: provider?.sourceId,
       modelCount: provider?.modelCount,
@@ -844,7 +855,7 @@ export function ProviderDrawer({
                       {needsLogin
                         ? ' · 需要网页登录'
                         : autoPeriod
-                          ? ` · ${provider.cycle === 'week' ? '每周' : '每月'}重置`
+                          ? ` · ${cycleLabel(provider.cycle)}重置`
                           : isUnknownLimit
                             ? ' · 账户额度待授权'
                             : ' · 接口额度'}
@@ -974,6 +985,7 @@ export function ProviderDrawer({
                           update('cycle', event.target.value as Cycle)
                         }
                       >
+                        <option value="day">每天重置</option>
                         <option value="week">每周重置</option>
                         <option value="month">每月重置</option>
                       </select>
@@ -1206,7 +1218,9 @@ export function ProviderDrawer({
                 </div>
                 <Switch
                   checked={form.enabled}
-                  onChange={() => update('enabled', !form.enabled)}
+                  onChange={() =>
+                setForm((current) => ({ ...current, enabled: !current.enabled }))
+              }
                   label="启用供应商"
                 />
               </div>

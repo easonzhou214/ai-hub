@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Account } from '../auth'
 import { Icon } from '../icons'
 import type { AlertItem } from '../types'
-import { cx, relativeTime } from '../utils'
+import { cx, initialOf, relativeTime } from '../utils'
 import { BrandMark, Switch } from './ui'
 
 type PopoverKey = 'notifications' | 'account' | null
@@ -22,7 +22,6 @@ interface TopBarProps {
   onSelectProvider: (id: string) => void
   onExport: () => void
   onOpenLogs: () => void
-  onReset: () => void
   onManageAccounts: () => void
   onLogout: () => void
 }
@@ -42,7 +41,6 @@ export function TopBar({
   onSelectProvider,
   onExport,
   onOpenLogs,
-  onReset,
   onManageAccounts,
   onLogout,
 }: TopBarProps) {
@@ -75,10 +73,7 @@ export function TopBar({
     setOpen((current) => (current === key ? null : key))
 
   const isAdmin = user.role === 'admin'
-  const initial =
-    user.displayName.trim().charAt(0).toUpperCase() ||
-    user.username.charAt(0).toUpperCase() ||
-    'E'
+  const initial = initialOf(user.displayName, user.username, 'E')
 
   return (
     <header className="topbar">
@@ -210,7 +205,7 @@ export function TopBar({
                   <strong>{user.displayName} 的个人工作区</strong>
                   <span>
                     {isAdmin
-                      ? '管理员 · 本地演示模式'
+                      ? '管理员 · 全部权限'
                       : `@${user.username} · 普通账号`}
                   </span>
                 </div>
@@ -284,18 +279,6 @@ export function TopBar({
                   <span className="menu-hint">管理员</span>
                 </button>
               )}
-              <button
-                type="button"
-                className="menu-item"
-                onClick={() => {
-                  setOpen(null)
-                  onReset()
-                }}
-              >
-                <Icon name="rotate" size={15} />
-                重置演示数据
-                <span className="menu-hint">本地</span>
-              </button>
               <button
                 type="button"
                 className="menu-item"

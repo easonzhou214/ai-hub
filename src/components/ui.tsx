@@ -1,7 +1,7 @@
 import type { ComponentProps, CSSProperties, ReactNode } from 'react'
 import { Icon } from '../icons'
 import type { ProviderStatus, ProviderType } from '../types'
-import { STATUS_META, TYPE_LABEL, cx } from '../utils'
+import { BAR_DANGER_PERCENT, QUOTA_WARN_PERCENT, STATUS_META, TYPE_LABEL, cx } from '../utils'
 
 export function BrandMark({ size = 28 }: { size?: number }) {
   return (
@@ -45,8 +45,8 @@ export function StatusBadge({ status }: { status: ProviderStatus }) {
 /** 按「已用比例」定色：用得越多越危险（进度条本身显示剩余比例）。 */
 export function usageTone(percent: number | null) {
   if (percent === null) return 'ok' as const
-  if (percent >= 90) return 'danger' as const
-  if (percent >= 80) return 'warn' as const
+  if (percent >= BAR_DANGER_PERCENT) return 'danger' as const
+  if (percent >= QUOTA_WARN_PERCENT) return 'warn' as const
   return 'ok' as const
 }
 

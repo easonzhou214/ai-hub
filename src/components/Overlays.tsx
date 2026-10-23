@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useEscapeKey, useInitialFocus } from '../hooks'
 import { Icon } from '../icons'
 import { cx } from '../utils'
 
@@ -18,18 +19,8 @@ interface ConfirmDialogProps {
 export function ConfirmDialog({ state, onCancel }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement>(null)
 
-  useEffect(() => {
-    if (!state) return
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCancel()
-    }
-    document.addEventListener('keydown', handleKey)
-    const timer = window.setTimeout(() => cancelRef.current?.focus(), 60)
-    return () => {
-      document.removeEventListener('keydown', handleKey)
-      window.clearTimeout(timer)
-    }
-  }, [state, onCancel])
+  useEscapeKey(Boolean(state), onCancel)
+  useInitialFocus(Boolean(state), cancelRef)
 
   if (!state) return null
 

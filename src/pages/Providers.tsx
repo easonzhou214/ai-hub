@@ -1,19 +1,13 @@
 import { useMemo, useState } from 'react'
 import { Icon } from '../icons'
 import type { Provider, ProviderPreset, ProviderType } from '../types'
+import { describeProvider } from '../providerView'
 import {
-  formatMoney,
+  cx,
+  cycleLabel,
   formatPercent,
   formatQuota,
-  getQuotaState,
-  getStatus,
-  isInterfaceSynced,
-  loginBrand,
   logoText,
-  expiryLabel,
-  relativeTime,
-  remainingPercent,
-  cx,
 } from '../utils'
 import {
   CodexLiveBadge,
@@ -255,39 +249,25 @@ export function ProvidersPage({
               <span className="pt-head-actions">启用 / 操作</span>
             </div>
             {filtered.map((provider) => {
-              const quota = getQuotaState(provider)
-              const remaining = remainingPercent(quota.percent)
+              const {
+                quota,
+                remaining,
+                status,
+                expiry,
+                synced,
+                needsLogin,
+                loginLabel,
+                unlimited,
+                unknown,
+                hasPlanQuota,
+                hasAccountBalance,
+                cumulative,
+                planBased,
+                noData,
+                lastSync,
+                money,
+              } = describeProvider(provider)
               const codexActive = provider.id === codexProviderId
-              const status = getStatus(provider)
-              const expiry = expiryLabel(provider)
-              const synced = isInterfaceSynced(provider)
-              const needsLogin = Boolean(
-                provider.loginRequired && provider.loginProvider,
-              )
-              const loginLabel = loginBrand(provider)
-              const unlimited = Boolean(provider.unlimited)
-              const unknown = Boolean(provider.limitUnknown)
-              const hasPlanQuota =
-                quota.percent !== null && quota.total !== null
-              const hasWallet = provider.accountBalance !== undefined
-              const hasAccountBalance = hasWallet && !hasPlanQuota
-              const cumulative = provider.lifetimeUsed ?? quota.used
-              const planBased = Boolean(
-                synced &&
-                  quota.percent !== null &&
-                  (provider.resetAt || provider.syncMode === 'pixellab'),
-              )
-              const noData = Boolean(
-                provider.syncError &&
-                  provider.quotaTotal <= 0 &&
-                  provider.accountBalance === undefined &&
-                  !provider.lifetimeUsed,
-              )
-              const lastSync = provider.lastSyncedAt
-                ? relativeTime(provider.lastSyncedAt)
-                : ''
-              const money = (value: number) =>
-                formatMoney(value, provider.currency)
               return (
                 <div
                   key={provider.id}
@@ -355,7 +335,7 @@ export function ProvidersPage({
                       ) : (
                         <>
                           {provider.billing === 'quota'
-                            ? `${provider.cycle === 'week' ? '每周' : '每月'}重置`
+                            ? `${cycleLabel(provider.cycle)}重置`
                             : '按量扣减余额'}
                           {provider.apiKey ? ' · 已保存 Key' : ''}
                         </>
@@ -456,7 +436,7 @@ export function ProvidersPage({
                             ? `已用 ${formatQuota(quota.used, provider)} / ${formatQuota(quota.total, provider)}`
                             : `累计已用 ${money(cumulative)}`}
                     </span>
-                    {hasPlanQuota && hasWallet && (
+                    {hasPlanQuota && hasAccountBalance && (
                       <span className="pt-wallet-sub">
                         <Icon name="wallet" size={11} />
                         钱包余额 {money(provider.accountBalance ?? 0)}
@@ -499,7 +479,7 @@ export function ProvidersPage({
                         type="button"
                         className="text-button pt-login-link"
                         onClick={() => onLogin(provider)}
-                        disabled={loginBusyId === provider.sourceId}
+                        disabled={Boolean(loginBusyId) && loginBusyId === provider.sourceId}
                       >
                         <Icon name="key" size={11} />
                         {loginBusyId === provider.sourceId

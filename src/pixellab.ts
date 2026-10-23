@@ -25,6 +25,8 @@
  *   the subscription quota has to come from `/v2/balance`.
  */
 
+import { withRetry } from './net'
+
 const BALANCE_URL = 'https://api.pixellab.ai/v2/balance'
 const BALANCE_TIMEOUT_MS = 15_000
 const BALANCE_ATTEMPTS = 3
@@ -38,14 +40,6 @@ class PixellabRequestError extends Error {
     this.name = 'PixellabRequestError'
     this.retryable = retryable
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-function networkAvailable() {
-  return typeof navigator === 'undefined' || navigator.onLine !== false
 }
 
 interface BalancePayload {
@@ -130,7 +124,10 @@ async function fetchBalanceOnce(token: string): Promise<PixellabBalance> {
     throw new PixellabRequestError('PixelLab 额度查询返回为空', true)
   }
 
+  // Number(null) === 0、Number('') === 0，会把「字段缺失」误判成「零额度」，
+  // 进而被判定为额度耗尽。这里只接受真正的数字或数字字符串。
   const finite = (value: unknown) => {
+    if (value === null || value === undefined || value === '') return undefined
     const num = Number(value)
     return Number.isFinite(num) ? num : undefined
   }
@@ -160,22 +157,15 @@ export async function fetchPixellabBalance(
     throw new Error('请先填写 PixelLab API Token')
   }
 
-  let lastError: unknown
-  for (let attempt = 1; attempt <= BALANCE_ATTEMPTS; attempt += 1) {
-    try {
-      return await fetchBalanceOnce(token)
-    } catch (error) {
-      lastError = error
-      const retryable = error instanceof PixellabRequestError && error.retryable
-      const timedOut =
-        error instanceof PixellabRequestError && /超时/.test(error.message)
-      // Do not spend 3 × 15s on a stalled connection.
-      const attemptLimit = timedOut ? 2 : BALANCE_ATTEMPTS
-      if (!retryable || attempt >= attemptLimit || !networkAvailable()) {
-        break
-      }
-      await sleep(BALANCE_RETRY_DELAYS_MS[attempt - 1] ?? 1_500)
-    }
-  }
-  throw lastError
+  return withRetry(() => fetchBalanceOnce(token), {
+    attempts: BALANCE_ATTEMPTS,
+    delays: BALANCE_RETRY_DELAYS_MS,
+    retryable: (error) =>
+      error instanceof PixellabRequestError && error.retryable,
+    // 不要为一个卡住的连接连续等 3 × 15 秒。
+    maxAttemptsFor: (error) =>
+      error instanceof PixellabRequestError && /超时/.test(error.message)
+        ? 2
+        : BALANCE_ATTEMPTS,
+  })
 }

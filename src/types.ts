@@ -10,7 +10,7 @@ export type SyncMode = 'manual' | 'openai-billing' | 'pixellab'
 
 /** 「添加供应商」抽屉里的一键预设 */
 export type ProviderPreset = 'pixellab'
-export type Cycle = 'week' | 'month'
+export type Cycle = 'day' | 'week' | 'month'
 export type PageKey = 'overview' | 'providers' | 'usage'
 export type ProviderStatus =
   | 'healthy'

@@ -16,7 +16,6 @@ const HELPER_PORT = 9335
 const PROFILE_DIR = join(process.cwd(), '.local', 'krill-login-profile')
 const KRILL_ORIGIN = 'https://www.krill-code.com'
 const LOGIN_URL = `${KRILL_ORIGIN}/app`
-const SUBSCRIPTION_URL = `${KRILL_ORIGIN}/api/subscription`
 const TOKEN_KEY = 'krill_jwt'
 const AIXOR_ORIGIN = 'https://aixor.org'
 const AIXOR_LOGIN_URL = `${AIXOR_ORIGIN}/sign-in`
@@ -37,13 +36,6 @@ export interface KrillAccount {
   resetAt: string
   subscriptionEndAt: string
   cycle: 'week' | 'month'
-}
-
-export class KrillLoginExpiredError extends Error {
-  constructor() {
-    super('Krill 登录态已过期，请重新登录')
-    this.name = 'KrillLoginExpiredError'
-  }
 }
 
 /**
@@ -686,38 +678,6 @@ async function ensureAixorPageForReading() {
   return aixorPageOpening
 }
 
-/**
- * Reads the Krill JWT from the helper browser's storage. This only runs when
- * the local user explicitly asks to log in.
- */
-export async function readKrillJwt(): Promise<string | null> {
-  await ensureHeadlessHelper()
-  if (!(await cdpUp())) return null
-  await ensureKrillPageForReading()
-  const pages = (await listPages()).filter(isKrillPage)
-  if (pages.length === 0) return null
-  const expression = `(() => {
-    try {
-      const token = localStorage.getItem(${JSON.stringify(TOKEN_KEY)});
-      if (token) return token;
-      const match = document.cookie.match(/(?:^|;\\s*)${TOKEN_KEY}=([^;]+)/);
-      return match ? decodeURIComponent(match[1]) : null;
-    } catch {
-      return null;
-    }
-  })()`
-
-  for (const page of pages) {
-    try {
-      const value = await cdpEvaluate(page.webSocketDebuggerUrl, expression)
-      if (typeof value === 'string' && value.trim()) return value.trim()
-    } catch {
-      // Try the next page.
-    }
-  }
-  return null
-}
-
 function finiteNumber(value: unknown): number | null {
   const number = Number(value)
   return Number.isFinite(number) ? number : null
@@ -899,42 +859,6 @@ export async function readKrillAccountFromBrowser(): Promise<KrillBrowserAccount
       ? '登录助手页面内请求失败，暂时无法读取 Krill 登录态'
       : '登录助手暂时无法读取 Krill 登录态',
   )
-}
-
-export async function fetchKrillAccount(jwt: string): Promise<KrillAccount> {
-  let response: Response
-  try {
-    response = await fetch(SUBSCRIPTION_URL, {
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${jwt}`,
-        'X-Language': 'zh-CN',
-        Origin: KRILL_ORIGIN,
-        Referer: `${KRILL_ORIGIN}/app`,
-        'User-Agent':
-          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36',
-      },
-      signal: AbortSignal.timeout(12_000),
-    })
-  } catch {
-    throw new Error('无法连接 Krill 额度接口')
-  }
-
-  if (response.status === 401 || response.status === 403) {
-    throw new KrillLoginExpiredError()
-  }
-  if (!response.ok) {
-    throw new Error(`Krill 额度接口返回 HTTP ${response.status}`)
-  }
-
-  const text = await response.text()
-  let payload: unknown
-  try {
-    payload = text ? JSON.parse(text) : null
-  } catch {
-    throw new Error('Krill 额度接口返回了非 JSON 数据')
-  }
-  return parseKrillAccount(payload)
 }
 
 export async function fetchKrillModelCount(

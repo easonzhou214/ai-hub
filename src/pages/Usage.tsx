@@ -1,8 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Icon } from '../icons'
 import type { PageKey, Provider, ProviderType } from '../types'
+import { describeProvider } from '../providerView'
 import {
+  cx,
   formatMoney,
+  formatMonthDay,
   formatPercent,
   formatQuota,
   getQuotaState,
@@ -11,11 +14,7 @@ import {
   isInterfaceSynced,
   loginBrand,
   logoText,
-  relativeTime,
-  remainingPercent,
   toUSD,
-  expiryLabel,
-  cx,
 } from '../utils'
 import {
   EmptyState,
@@ -51,6 +50,16 @@ interface CompositionItem {
   /** 仅在按类型汇总时补充「已用」；按供应商拆分时只保留占比，来源信息在额度明细里 */
   meta?: string
 }
+
+const ATTENTION_STATUSES = new Set([
+  'expiring',
+  'expired',
+  'warning',
+  'exhausted',
+  'error',
+  'login',
+  'unknown',
+])
 
 export function UsagePage({
   providers,
@@ -105,7 +114,13 @@ export function UsagePage({
             ),
       0,
     )
+    // getStatus 是互斥的：同一供应商不会既算「即将到期」又算「额度待确认」，
+    // 而以前这里把 unknownCount 与各 status 相加，会重复计数。
+    const attention = enabled.filter((p) =>
+      ATTENTION_STATUSES.has(getStatus(p)),
+    ).length
     return {
+      attention,
       quotaAvailable,
       balanceAvailable,
       quotaCount: quotaProviders.length,
@@ -114,9 +129,7 @@ export function UsagePage({
         (provider) => !isGenerationQuota(provider),
       ).length,
       balanceCount: balanceProviders.length,
-      unlimitedCount: enabled.filter(
-        (p) => p.unlimited && !p.limitUnknown,
-      ).length,
+      unlimitedCount: enabled.filter((p) => p.unlimited).length,
       unknownCount: enabled.filter((p) => p.limitUnknown).length,
       syncedCount: synced.length,
       syncErrorCount: synced.filter((p) => p.syncError).length,
@@ -314,23 +327,11 @@ export function UsagePage({
           <div>
             <p className="summary-label">需要关注</p>
             <p className="summary-value">
-              {summary.expiring +
-                summary.warning +
-                summary.exhausted +
-                summary.expired +
-                summary.errorCount +
-                summary.loginCount +
-                summary.unknownCount}
+              {summary.attention}
               <span className="summary-unit"> 个</span>
             </p>
             <p className="summary-foot">
-              {summary.expiring +
-                summary.warning +
-                summary.exhausted +
-                summary.expired +
-                summary.errorCount +
-                summary.loginCount +
-                summary.unknownCount ===
+              {summary.attention ===
               0
                 ? '所有启用供应商状态良好'
                 : [
@@ -494,40 +495,24 @@ export function UsagePage({
                 <span>状态</span>
               </div>
               {rows.map((provider) => {
-                const quota = getQuotaState(provider)
-                const remaining = remainingPercent(quota.percent)
+                const {
+                  quota,
+                  remaining,
+                  status,
+                  expiry,
+                  synced,
+                  needsLogin,
+                  unlimited,
+                  unknown,
+                  hasAccountBalance,
+                  hasBoth,
+                  planBased,
+                  noData,
+                  cumulative,
+                  lastSync,
+                  money,
+                } = describeProvider(provider)
                 const codexActive = provider.id === codexProviderId
-                const status = getStatus(provider)
-                const expiry = expiryLabel(provider)
-                const synced = isInterfaceSynced(provider)
-                const needsLogin = Boolean(
-                  provider.loginRequired && provider.loginProvider,
-                )
-                const unlimited = Boolean(provider.unlimited)
-                const unknown = Boolean(provider.limitUnknown)
-                const hasPlanQuota =
-                  quota.percent !== null && quota.total !== null
-                const hasWallet = provider.accountBalance !== undefined
-                const hasAccountBalance = hasWallet && !hasPlanQuota
-                const hasBoth = hasPlanQuota && hasWallet
-                const planBased = Boolean(
-                  synced &&
-                    quota.percent !== null &&
-                    (provider.resetAt ||
-                      provider.syncMode === 'pixellab'),
-                )
-                const noData = Boolean(
-                  provider.syncError &&
-                    provider.quotaTotal <= 0 &&
-                    provider.accountBalance === undefined &&
-                    !provider.lifetimeUsed,
-                )
-                const cumulative = provider.lifetimeUsed ?? quota.used
-                const lastSync = provider.lastSyncedAt
-                  ? relativeTime(provider.lastSyncedAt)
-                  : ''
-                const money = (value: number) =>
-                  formatMoney(value, provider.currency)
                 return (
                   <div
                     key={provider.id}
@@ -757,7 +742,7 @@ export function UsagePage({
                               ? resetText(provider.resetAt)
                               : '无周期重置'}
                           </span>
-                          <span className={cx(expiry && 'ut-expiry')}>
+                          <span className={cx(expiry ? 'ut-expiry' : undefined)}>
                             {expiry ?? '长期有效'}
                           </span>
                         </>
@@ -780,7 +765,6 @@ export function UsagePage({
 
 function resetText(isoDate: string) {
   if (!isoDate) return '未设置重置'
-  const date = new Date(isoDate)
-  if (Number.isNaN(date.getTime())) return '未设置重置'
-  return `${date.getMonth() + 1} 月 ${date.getDate()} 日重置`
+  const label = formatMonthDay(isoDate)
+  return label === '—' ? '未设置重置' : `${label}重置`
 }

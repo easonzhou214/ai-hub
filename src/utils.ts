@@ -1,6 +1,7 @@
 import type {
   AlertItem,
   Currency,
+  Cycle,
   Provider,
   ProviderStatus,
   ProviderType,
@@ -8,6 +9,20 @@ import type {
 } from './types'
 
 export const FX_USD_CNY = 7.2
+
+/**
+ * 全仓共用的额度阈值。放在一处，避免「状态判定」「告警文案」「进度条配色」
+ * 各自维护一份数字后又慢慢漂移。
+ */
+/** 已用 ≥80% 视为额度紧张，≥100% 视为耗尽（状态与告警共用）。 */
+export const QUOTA_WARN_PERCENT = 80
+export const QUOTA_EXHAUSTED_PERCENT = 100
+/** 进度条独立的分档：≥90% 才换成危险色，避免 80% 附近就满屏红。 */
+export const BAR_DANGER_PERCENT = 90
+/** 账户余额低于该值视为偏低（按供应商自身币种计）。 */
+export const LOW_BALANCE_AMOUNT = 1
+/** 到期前 5 天进入「即将到期」。 */
+export const EXPIRING_SOON_DAYS = 5
 
 export const CURRENCY_SYMBOL: Record<Currency, string> = {
   USD: '$',
@@ -56,17 +71,21 @@ export function toUSD(amount: number, currency: Currency) {
   return currency === 'CNY' ? amount / FX_USD_CNY : amount
 }
 
+/** 统一的千分位数字格式，金额与次数共用同一套 toLocaleString 配置。 */
+function groupNumber(value: number, decimals: number) {
+  const safe = Number.isFinite(value) ? value : 0
+  return safe.toLocaleString('en-US', {
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
+  })
+}
+
 export function formatMoney(
   amount: number,
   currency: Currency,
   options: { decimals?: number } = {},
 ) {
-  const decimals = options.decimals ?? 2
-  const safe = Number.isFinite(amount) ? amount : 0
-  return `${CURRENCY_SYMBOL[currency]}${safe.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })}`
+  return `${CURRENCY_SYMBOL[currency]}${groupNumber(amount, options.decimals ?? 2)}`
 }
 
 export function formatNumber(value: number) {
@@ -101,12 +120,7 @@ export function formatQuota(
     return formatMoney(amount, provider.currency, options)
   }
   // 次数按整数展示：接口会返回小数点，但看板只需要量级。
-  const safe = Number.isFinite(amount) ? amount : 0
-  const decimals = options.decimals ?? 0
-  return `${safe.toLocaleString('en-US', {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  })} 次`
+  return `${groupNumber(amount, options.decimals ?? 0)} 次`
 }
 
 export function formatPercent(value: number | null) {
@@ -134,14 +148,30 @@ export function formatMonthDay(isoDate: string | null | undefined) {
   return `${date.getMonth() + 1} 月 ${date.getDate()} 日`
 }
 
-export function formatFullDate(isoDate: string | null | undefined) {
+export function formatFullDate(
+  isoDate: string | null | undefined,
+  separator = '-',
+) {
   if (!isoDate) return '—'
   const date = new Date(isoDate)
   if (Number.isNaN(date.getTime())) return '—'
   const y = date.getFullYear()
   const m = `${date.getMonth() + 1}`.padStart(2, '0')
   const d = `${date.getDate()}`.padStart(2, '0')
-  return `${y}-${m}-${d}`
+  return `${y}${separator}${m}${separator}${d}`
+}
+
+/** 头像里显示的首字母：优先显示名称，其次用户名。 */
+export function initialOf(
+  displayName: string | null | undefined,
+  username = '',
+  fallback = '?',
+) {
+  return (
+    (displayName ?? '').trim().charAt(0).toUpperCase() ||
+    username.trim().charAt(0).toUpperCase() ||
+    fallback
+  )
 }
 
 export function relativeTime(isoDate: string | null | undefined) {
@@ -149,11 +179,20 @@ export function relativeTime(isoDate: string | null | undefined) {
   const date = new Date(isoDate)
   if (Number.isNaN(date.getTime())) return '尚未同步'
   const diff = Date.now() - date.getTime()
+  // 轻微的未来时间（时钟偏差）按「刚刚」处理；明显在未来的直接显示日期，
+  // 否则远端设备写错时间会一直显示「刚刚」。
+  if (diff < -60_000) return formatFullDate(isoDate)
   if (diff < 60_000) return '刚刚'
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`
   if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`
   return formatFullDate(isoDate)
+}
+
+export function cycleLabel(cycle: Cycle) {
+  if (cycle === 'day') return '每天'
+  if (cycle === 'week') return '每周'
+  return '每月'
 }
 
 export function resetLabel(provider: Provider) {
@@ -176,38 +215,49 @@ export function expiryLabel(provider: Provider) {
   return `${days} 天后到期`
 }
 
+function quotaLabel(provider: Provider) {
+  if (provider.syncMode === 'openai-billing' && provider.resetAt) return '周期额度'
+  if (provider.syncMode === 'openai-billing') return '账户额度'
+  return '周期额度'
+}
+
 export function getQuotaState(provider: Provider): QuotaState {
-  // A periodic plan takes precedence when both a plan and a wallet balance
-  // exist. The wallet is still shown as a separate line in the UI.
-  if (
-    !provider.limitUnknown &&
-    !provider.unlimited &&
-    provider.billing === 'quota' &&
-    provider.quotaTotal > 0
-  ) {
-    const total = Math.max(provider.quotaTotal, 0)
-    const used = clamp(provider.quotaUsed, 0, total)
-    const percent = total > 0 ? (used / total) * 100 : null
+  const total = Number.isFinite(provider.quotaTotal)
+    ? Math.max(provider.quotaTotal, 0)
+    : 0
+  const used = Number.isFinite(provider.quotaUsed)
+    ? Math.max(provider.quotaUsed, 0)
+    : 0
+
+  // 不限额优先：没有总量，也没有百分比可言。
+  if (provider.unlimited) {
     return {
-      percent,
-      used,
+      percent: null,
+      used: provider.lifetimeUsed ?? used,
+      total: null,
+      available: 0,
+      label: '不限额度',
+    }
+  }
+
+  // 周期额度优先于钱包余额；两者同时存在时钱包在界面上单独一行展示。
+  if (provider.billing === 'quota' && total > 0 && !provider.limitUnknown) {
+    const clamped = Math.min(used, total)
+    return {
+      percent: (clamped / total) * 100,
+      used: clamped,
       total,
-      available: Math.max(total - used, 0),
-      label:
-        provider.syncMode === 'openai-billing' && provider.resetAt
-          ? '周期额度'
-          : provider.syncMode === 'openai-billing'
-            ? '账户额度'
-            : '周期额度',
+      available: Math.max(total - clamped, 0),
+      label: quotaLabel(provider),
     }
   }
 
   if (provider.accountBalance !== undefined) {
     return {
       percent: null,
-      used: provider.lifetimeUsed ?? provider.quotaUsed,
+      used: provider.lifetimeUsed ?? used,
       total: null,
-      available: provider.accountBalance,
+      available: Math.max(provider.accountBalance, 0),
       label: '账户余额',
     }
   }
@@ -215,48 +265,32 @@ export function getQuotaState(provider: Provider): QuotaState {
   if (provider.limitUnknown) {
     return {
       percent: null,
-      used: provider.lifetimeUsed ?? provider.quotaUsed,
+      used: provider.lifetimeUsed ?? used,
       total: null,
       available: 0,
       label: '累计用量',
     }
   }
 
-  if (provider.unlimited) {
+  // 声明了周期额度但总量未知：返回 total=null，避免界面显示「已用 0 / 0」。
+  if (provider.billing === 'quota') {
     return {
       percent: null,
-      used: provider.lifetimeUsed ?? provider.quotaUsed,
+      used,
       total: null,
       available: 0,
-      label: '累计用量',
-    }
-  }
-
-  if (provider.billing === 'quota') {
-    const total = Math.max(provider.quotaTotal, 0)
-    const used = clamp(provider.quotaUsed, 0, Math.max(total, 0))
-    const percent = total > 0 ? (used / total) * 100 : null
-    return {
-      percent,
-      used,
-      total,
-      available: Math.max(total - used, 0),
-      label:
-        provider.syncMode === 'openai-billing' && provider.resetAt
-          ? '周期额度'
-          : provider.syncMode === 'openai-billing'
-            ? '账户额度'
-            : '周期额度',
+      label: quotaLabel(provider),
     }
   }
 
   if (provider.monthlyBudget > 0) {
-    const percent = (provider.monthlySpend / provider.monthlyBudget) * 100
+    const spend = Math.max(provider.monthlySpend, 0)
     return {
-      percent,
-      used: provider.monthlySpend,
+      percent: (spend / provider.monthlyBudget) * 100,
+      used: spend,
       total: provider.monthlyBudget,
-      available: provider.balance,
+      // 预算模式的「剩余」是预算减去已花，不是钱包余额。
+      available: Math.max(provider.monthlyBudget - spend, 0),
       label: '本月预算',
     }
   }
@@ -265,7 +299,7 @@ export function getQuotaState(provider: Provider): QuotaState {
     percent: null,
     used: provider.monthlySpend,
     total: null,
-    available: provider.balance,
+    available: Math.max(provider.balance, 0),
     label: '账户余额',
   }
 }
@@ -280,22 +314,31 @@ export function getStatus(provider: Provider): ProviderStatus {
   if (!provider.enabled) return 'disabled'
   const expires = daysUntil(provider.expiresAt)
   if (expires !== null && expires < 0) return 'expired'
-  if (expires !== null && expires <= 5) return 'expiring'
+  if (expires !== null && expires <= EXPIRING_SOON_DAYS) return 'expiring'
   if (provider.loginRequired) return 'login'
   if (provider.syncError) return 'error'
+  if (provider.unlimited) return 'healthy'
   if (provider.limitUnknown) return 'unknown'
-  if (provider.billing === 'quota' && provider.quotaTotal > 0) {
-    const quota = getQuotaState(provider)
-    if (quota.available <= 0) return 'exhausted'
-    return quota.percent !== null && quota.percent >= 80 ? 'warning' : 'healthy'
+
+  const quota = getQuotaState(provider)
+  if (quota.percent !== null) {
+    if (quota.available <= 0 || quota.percent >= QUOTA_EXHAUSTED_PERCENT) {
+      return 'exhausted'
+    }
+    return quota.percent >= QUOTA_WARN_PERCENT ? 'warning' : 'healthy'
   }
+
   if (provider.accountBalance !== undefined) {
     if (provider.accountBalance <= 0) return 'exhausted'
-    return provider.accountBalance < 1 ? 'warning' : 'healthy'
+    return provider.accountBalance < LOW_BALANCE_AMOUNT ? 'warning' : 'healthy'
   }
-  const percent = getQuotaState(provider).percent
-  if (percent !== null && percent >= 100) return 'exhausted'
-  if (percent !== null && percent >= 80) return 'warning'
+
+  // 充值型账户的余额是唯一口径，0 必须算耗尽（与 accountBalance 保持一致）。
+  if (provider.billing === 'balance') {
+    if (provider.balance <= 0) return 'exhausted'
+    return provider.balance < LOW_BALANCE_AMOUNT ? 'warning' : 'healthy'
+  }
+
   return 'healthy'
 }
 
@@ -355,7 +398,7 @@ export function providerAlerts(provider: Provider): AlertItem[] {
   if (!provider.enabled) return []
   const alerts: AlertItem[] = []
   const expires = daysUntil(provider.expiresAt)
-  if (expires !== null && expires <= 5) {
+  if (expires !== null && expires <= EXPIRING_SOON_DAYS) {
     alerts.push({
       id: `${provider.id}-expiry`,
       providerId: provider.id,
@@ -381,7 +424,7 @@ export function providerAlerts(provider: Provider): AlertItem[] {
       title: `${provider.name} 额度同步失败`,
       description: provider.syncError,
     })
-  } else if (provider.limitUnknown) {
+  } else if (provider.limitUnknown && !provider.unlimited) {
     alerts.push({
       id: `${provider.id}-unknown`,
       providerId: provider.id,
@@ -394,7 +437,7 @@ export function providerAlerts(provider: Provider): AlertItem[] {
 
   if (
     provider.accountBalance !== undefined &&
-    provider.accountBalance < 1 &&
+    provider.accountBalance < LOW_BALANCE_AMOUNT &&
     provider.quotaTotal <= 0
   ) {
     alerts.push({
@@ -410,7 +453,7 @@ export function providerAlerts(provider: Provider): AlertItem[] {
   }
 
   const quota = getQuotaState(provider)
-  if (quota.percent !== null && quota.percent >= 80) {
+  if (quota.percent !== null && quota.percent >= QUOTA_WARN_PERCENT) {
     const exhausted = quota.available <= 0
     alerts.push({
       id: `${provider.id}-quota`,

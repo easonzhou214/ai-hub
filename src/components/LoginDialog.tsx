@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEscapeKey } from '../hooks'
 import { Icon } from '../icons'
 import { cx } from '../utils'
 
@@ -18,14 +18,7 @@ export function LoginDialog({
   onCancel: () => void
   onRetry: () => void
 }) {
-  useEffect(() => {
-    if (!state) return
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCancel()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [state, onCancel])
+  useEscapeKey(Boolean(state), onCancel)
 
   if (!state) return null
 

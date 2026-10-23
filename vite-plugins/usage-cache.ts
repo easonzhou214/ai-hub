@@ -101,9 +101,3 @@ export function getUsageSnapshot(sourceId: string): UsageSnapshot | null {
   if (!sourceId) return null
   return load().get(sourceId) ?? null
 }
-
-export function listUsageSnapshots(): UsageSnapshot[] {
-  return [...load().values()].sort((a, b) =>
-    b.cachedAt.localeCompare(a.cachedAt),
-  )
-}

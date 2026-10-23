@@ -147,15 +147,30 @@ function readJsonBody(request: IncomingMessage, limit = MAX_BODY_BYTES) {
   })
 }
 
+/**
+ * 状态写入的串行队列。
+ *
+ * revision 乐观锁必须是「读 → 比较 → 写」一体的临界区：早先读在请求开头、
+ * 写才进队列，两台设备同时 PUT 会双双通过校验，后写的静默覆盖前写的。
+ */
+let stateLock: Promise<unknown> = Promise.resolve()
+
+function withStateLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = stateLock.then(task, task)
+  stateLock = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
+}
+
 async function handleState(
   request: IncomingMessage,
   response: ServerResponse,
 ) {
-  const stored = readState()
-  const state = stored ?? emptyState()
-
   if (request.method === 'GET') {
-    sendJson(response, 200, { ...state, empty: stored === null })
+    const stored = readState()
+    sendJson(response, 200, { ...(stored ?? emptyState()), empty: stored === null })
     return
   }
 
@@ -196,32 +211,41 @@ async function handleState(
   const baseRevision = Number.isFinite(record.baseRevision)
     ? Number(record.baseRevision)
     : null
-  const currentRevision = state.revision
 
-  if (baseRevision !== null && baseRevision !== currentRevision) {
-    sendJson(response, 409, {
-      error: 'revision-mismatch',
-      state: { ...state, empty: stored === null },
-    })
-    return
-  }
+  const outcome = await withStateLock(async () => {
+    const stored = readState()
+    const state = stored ?? emptyState()
+    const currentRevision = state.revision
 
-  const next: StateRecord = {
-    version: 1,
-    revision: currentRevision + 1,
-    updatedAt: new Date().toISOString(),
-    providers,
-    accounts,
-    lastSyncedAt:
-      typeof record.lastSyncedAt === 'string' ? record.lastSyncedAt : '',
-    autoSync: typeof record.autoSync === 'boolean' ? record.autoSync : true,
-  }
+    if (baseRevision !== null && baseRevision !== currentRevision) {
+      return {
+        status: 409 as const,
+        payload: {
+          error: 'revision-mismatch',
+          state: { ...state, empty: stored === null },
+        },
+      }
+    }
 
-  await queueWrite(next)
-  sendJson(response, 200, {
-    revision: next.revision,
-    updatedAt: next.updatedAt,
+    const next: StateRecord = {
+      version: 1,
+      revision: currentRevision + 1,
+      updatedAt: new Date().toISOString(),
+      providers,
+      accounts,
+      lastSyncedAt:
+        typeof record.lastSyncedAt === 'string' ? record.lastSyncedAt : '',
+      autoSync: typeof record.autoSync === 'boolean' ? record.autoSync : true,
+    }
+
+    await queueWrite(next)
+    return {
+      status: 200 as const,
+      payload: { revision: next.revision, updatedAt: next.updatedAt },
+    }
   })
+
+  sendJson(response, outcome.status, outcome.payload)
 }
 
 function stateMiddleware(

@@ -70,27 +70,6 @@ function normalizeDoc(snapshot: HubSnapshot, validate: (value: unknown) => value
   }
 }
 
-/**
- * 首次加载时把服务端与本地缓存按 id 合并：服务端优先，同 id 取 updatedAt 较新的，
- * 本地独有的供应商保留。这样无论先打开哪台设备，都不会把另一台独有的配置吞掉。
- */
-function mergeProviders(remote: Provider[], local: Provider[]) {
-  const merged = [...remote]
-  const index = new Map(remote.map((provider, position) => [provider.id, position]))
-  for (const provider of local) {
-    const position = index.get(provider.id)
-    if (position === undefined) {
-      merged.push(provider)
-      continue
-    }
-    const current = merged[position]
-    if (Date.parse(provider.updatedAt) > Date.parse(current.updatedAt)) {
-      merged[position] = provider
-    }
-  }
-  return merged
-}
-
 export function useHubState(options: HubStateOptions) {
   const [providers, setProviders] = useState<Provider[]>(() => {
     const cached = readCache<unknown>(PROVIDERS_KEY)
@@ -298,16 +277,11 @@ export function useHubState(options: HubStateOptions) {
         setMode('server')
         revisionRef.current = Number(snapshot.revision) || 0
         if (snapshot.providers.length > 0) {
-          const merged = mergeProviders(
-            snapshot.providers,
-            providersRef.current,
-          )
-          adopt({ ...snapshot, providers: merged })
+          // 服务端有数据时以服务端为准。早期版本会把本地缓存按 id 并进来，
+          // 结果是别的设备删掉的供应商又被这份旧缓存复活、还推回服务端。
+          // 本地数据只在「服务端为空」时用于一次性迁移（下面的分支）。
+          adopt(snapshot)
           setHasData(true)
-          // 本地有服务端没有的供应商（或版本更新），把合并结果推回服务端。
-          if (merged.length !== snapshot.providers.length) {
-            void pushLocal()
-          }
         } else if (providersRef.current.length > 0) {
           setHasData(true)
           await flush(0)

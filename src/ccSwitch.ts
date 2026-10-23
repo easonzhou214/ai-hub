@@ -91,9 +91,10 @@ export function ccSwitchProviderToProvider(
     planName: `Codex · ${config.model || 'Custom API'}`,
     quotaTotal: existing?.quotaTotal ?? 0,
     quotaUsed: existing?.quotaUsed ?? 0,
-    cycle: 'month',
-    resetAt: '',
-    expiresAt: '',
+    cycle: existing?.cycle ?? 'month',
+    // 重置日与到期日由接口或用户维护，重新导入时不能抹掉手填的值。
+    resetAt: existing?.resetAt ?? '',
+    expiresAt: existing?.expiresAt ?? '',
     balance: existing?.balance ?? 0,
     monthlySpend: existing?.monthlySpend ?? 0,
     monthlyBudget: existing?.monthlyBudget ?? 0,
@@ -114,7 +115,8 @@ export function ccSwitchProviderToProvider(
     loginProvider,
     loginRequired: existing?.loginRequired ?? Boolean(loginProvider),
     lastSyncedAt: existing?.lastSyncedAt ?? '',
-    syncError: '',
+    // 导入只刷新配置，不负责修复同步故障，保留原有的失败原因。
+    syncError: existing?.syncError ?? '',
     source: 'cc-switch',
     sourceId: config.sourceId,
     modelCount: existing?.modelCount,

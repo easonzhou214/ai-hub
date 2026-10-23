@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useEscapeKey, useInitialFocus } from '../hooks'
 import { Icon } from '../icons'
 import { fetchSyncLogs, type SyncLogEvent, type SyncLogSnapshot } from '../syncLog'
 import { cx } from '../utils'
@@ -58,10 +59,17 @@ export function SyncLogDialog({
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [reloadKey, setReloadKey] = useState(0)
+  const closeRef = useRef<HTMLButtonElement>(null)
+
+  useEscapeKey(open, onClose)
+  useInitialFocus(open, closeRef)
 
   useEffect(() => {
     if (!open) return
     let cancelled = false
+    // 每次打开都清掉上一轮结果：否则重开时会先渲染旧日志、且因为
+    // events 非空而不显示「正在读取」。
+    setSnapshot(null)
     setLoading(true)
     setError('')
     fetchSyncLogs(120)
@@ -81,15 +89,6 @@ export function SyncLogDialog({
       cancelled = true
     }
   }, [open, reloadKey])
-
-  useEffect(() => {
-    if (!open) return
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => document.removeEventListener('keydown', handleKey)
-  }, [open, onClose])
 
   if (!open) return null
 
@@ -118,6 +117,7 @@ export function SyncLogDialog({
             </p>
           </div>
           <button
+            ref={closeRef}
             type="button"
             className="icon-button"
             aria-label="关闭同步日志"

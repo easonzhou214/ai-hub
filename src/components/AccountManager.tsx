@@ -1,38 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
+import { useEscapeKey, useInitialFocus } from '../hooks'
 import type { Account, AccountInput } from '../auth'
 import { Icon } from '../icons'
-import { cx } from '../utils'
+import { cx, formatFullDate, initialOf } from '../utils'
 import { ConfirmDialog, type ConfirmState } from './Overlays'
-
-function formatDate(iso: string) {
-  const date = new Date(iso)
-  if (Number.isNaN(date.getTime())) return '—'
-  const month = `${date.getMonth() + 1}`.padStart(2, '0')
-  const day = `${date.getDate()}`.padStart(2, '0')
-  return `${date.getFullYear()}.${month}.${day}`
-}
-
-function initialOf(account: Account) {
-  return (
-    account.displayName.trim().charAt(0).toUpperCase() ||
-    account.username.charAt(0).toUpperCase()
-  )
-}
 
 export function AccountManager({
   open,
   accounts,
+  currentUser,
   onClose,
   onCreate,
   onDelete,
+  onChangePassword,
 }: {
   open: boolean
   accounts: Account[]
+  currentUser: Account
   onClose: () => void
   /** 返回 null 表示创建成功，否则返回错误文案。 */
   onCreate: (input: AccountInput) => string | null
   onDelete: (account: Account) => void
+  /** 修改当前登录账号的密码，返回 null 表示成功。 */
+  onChangePassword: (current: string, next: string) => string | null
 }) {
   const [username, setUsername] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -40,20 +31,22 @@ export function AccountManager({
   const [reveal, setReveal] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState<ConfirmState | null>(null)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordError, setPasswordError] = useState<string | null>(null)
+  const [passwordNotice, setPasswordNotice] = useState<string | null>(null)
   const usernameRef = useRef<HTMLInputElement>(null)
+  // 回调与 confirm 用 ref 读取：把内联箭头放进依赖会让下面两个 effect 在父组件
+  // 每次渲染时重跑，进而把焦点从正在输入的字段抢回用户名框。
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  const confirmRef = useRef(confirm)
+  confirmRef.current = confirm
 
-  useEffect(() => {
-    if (!open) return
-    const timer = window.setTimeout(() => usernameRef.current?.focus(), 80)
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !confirm) onClose()
-    }
-    document.addEventListener('keydown', handleKey)
-    return () => {
-      window.clearTimeout(timer)
-      document.removeEventListener('keydown', handleKey)
-    }
-  }, [open, onClose, confirm])
+  useInitialFocus(open, usernameRef, 80)
+  useEscapeKey(open, () => {
+    if (!confirmRef.current) onCloseRef.current()
+  })
 
   useEffect(() => {
     if (open) return
@@ -63,6 +56,10 @@ export function AccountManager({
     setReveal(false)
     setError(null)
     setConfirm(null)
+    setCurrentPassword('')
+    setNewPassword('')
+    setPasswordError(null)
+    setPasswordNotice(null)
   }, [open])
 
   if (!open) return null
@@ -80,6 +77,20 @@ export function AccountManager({
     setPassword('')
     setReveal(false)
     usernameRef.current?.focus()
+  }
+
+  const submitPassword = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const message = onChangePassword(currentPassword, newPassword)
+    if (message) {
+      setPasswordError(message)
+      setPasswordNotice(null)
+      return
+    }
+    setPasswordError(null)
+    setPasswordNotice('密码已更新，下次登录请使用新密码')
+    setCurrentPassword('')
+    setNewPassword('')
   }
 
   const askDelete = (account: Account) => {
@@ -138,7 +149,7 @@ export function AccountManager({
                       account.role === 'admin' && 'is-admin',
                     )}
                   >
-                    {initialOf(account)}
+                    {initialOf(account.displayName, account.username)}
                   </span>
                   <div className="accounts-copy">
                     <strong>
@@ -153,7 +164,8 @@ export function AccountManager({
                       </span>
                     </strong>
                     <span>
-                      @{account.username} · 创建于 {formatDate(account.createdAt)}
+                      @{account.username} · 创建于{' '}
+                      {formatFullDate(account.createdAt, '.')}
                     </span>
                   </div>
                   {account.role === 'admin' ? (
@@ -262,12 +274,75 @@ export function AccountManager({
                 </button>
               </div>
             </form>
+
+            <form className="accounts-add" onSubmit={submitPassword}>
+              <div className="accounts-add-title">
+                <Icon name="key" size={13} />
+                修改我的密码 · @{currentUser.username}
+              </div>
+              <div className="form-grid">
+                <div className="field">
+                  <label className="field-label" htmlFor="self-current-password">
+                    当前密码
+                  </label>
+                  <input
+                    id="self-current-password"
+                    type="password"
+                    value={currentPassword}
+                    onChange={(event) => {
+                      setCurrentPassword(event.target.value)
+                      setPasswordError(null)
+                    }}
+                    autoComplete="current-password"
+                  />
+                </div>
+                <div className="field">
+                  <label className="field-label" htmlFor="self-new-password">
+                    新密码
+                  </label>
+                  <input
+                    id="self-new-password"
+                    type="password"
+                    value={newPassword}
+                    onChange={(event) => {
+                      setNewPassword(event.target.value)
+                      setPasswordError(null)
+                    }}
+                    placeholder="至少 6 位"
+                    autoComplete="new-password"
+                  />
+                </div>
+              </div>
+              {passwordError && (
+                <p className="auth-error" role="alert">
+                  <Icon name="alert" size={13} />
+                  {passwordError}
+                </p>
+              )}
+              {passwordNotice && (
+                <p className="field-hint" role="status">
+                  {passwordNotice}
+                </p>
+              )}
+              <div className="accounts-add-foot">
+                <span className="field-hint">
+                  改完立即生效，其他设备下次登录需使用新密码。
+                </span>
+                <button
+                  type="submit"
+                  className="btn btn-secondary btn-sm"
+                  disabled={!currentPassword || !newPassword}
+                >
+                  更新密码
+                </button>
+              </div>
+            </form>
           </div>
 
           <div className="accounts-foot">
             <span className="login-foot-note">
               <Icon name="lock" size={12} />
-              账号与会话仅保存在此浏览器
+              账号会随状态同步，会话仍保存在此浏览器
             </span>
             <button type="button" className="btn btn-ghost" onClick={onClose}>
               关闭

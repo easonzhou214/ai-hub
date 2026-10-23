@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Plugin } from 'vite'
+import pkg from '../package.json'
 import {
   detectWebLoginProvider,
   fetchKrillModelCount,
@@ -42,6 +43,8 @@ const CODEX_CONFIG_PATH = join(homedir(), '.codex', 'config.toml')
 const REQUEST_TIMEOUT_MS = 12_000
 const SYNC_ATTEMPTS = 3
 const RETRY_DELAYS_MS = [500, 1_500]
+/** 与 package.json 保持一致，避免请求头里写死的版本号再次漂移。 */
+const APP_VERSION = pkg.version
 
 export interface CodexCurrentSnapshot {
   available: boolean
@@ -440,7 +443,7 @@ async function requestJson(
   try {
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': 'AI-Hub/0.3 (local quota reader)',
+      'User-Agent': `AI-Hub/${APP_VERSION} (local quota reader)`,
     }
     if (apiKey) headers.Authorization = `Bearer ${apiKey}`
     const response = await fetch(url, {

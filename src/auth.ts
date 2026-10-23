@@ -1,9 +1,12 @@
 /**
  * 本地账号体系
  *
- * 这个构建没有服务端：账号、会话都只存在当前浏览器的 localStorage 里。
- * 管理员凭据随前端包一起发布，因此这里不构成真正的安全边界——密码只做
- * 摘要后存储，避免明文躺在 DevTools 里，但不要把它当成线上认证方案。
+ * 账号与会话存在 localStorage，并通过 /api/state 同步到服务端状态文件；
+ * 服务端不校验身份，所以这里不构成安全边界——密码只做摘要，避免明文躺在
+ * DevTools 与 hub-state.json 里，但不要把它当成线上认证方案。
+ *
+ * 管理员只在「首次运行、本地还没有 admin 记录」时用内置口令引导一次，
+ * 之后以存储里的摘要为准（可通过 VITE_ADMIN_BOOTSTRAP_PASSWORD 覆盖引导口令）。
  */
 
 export type AccountRole = 'admin' | 'member'
@@ -32,7 +35,9 @@ const ACCOUNTS_KEY = 'aihub.accounts.v1'
 const SESSION_KEY = 'aihub.session.v2'
 
 const ADMIN_USERNAME = 'easonzhou'
-const ADMIN_PASSWORD = 'bob215921'
+/** 仅用于首次创建管理员，之后以存储中的摘要为准。 */
+const ADMIN_BOOTSTRAP_PASSWORD =
+  import.meta.env.VITE_ADMIN_BOOTSTRAP_PASSWORD || 'bob215921'
 const ADMIN_DISPLAY_NAME = 'Eason'
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]{3,20}$/
@@ -97,7 +102,7 @@ function makeId() {
   }
 }
 
-/** 读取账号列表，并始终把管理员账号同步成代码里的那份凭据。 */
+/** 读取账号列表；管理员记录缺失时用引导口令补一条，已有的不覆盖。 */
 export function getAccounts(): Account[] {
   const stored = readAccounts()
   const adminIndex = stored.findIndex(
@@ -106,18 +111,19 @@ export function getAccounts(): Account[] {
 
   const admin: Account =
     adminIndex >= 0
-      ? {
+      ? // 保留已有摘要：以前每次读取都强制写回内置口令，等于管理员改密码
+        // 也无效。现在只有缺记录时才用引导口令创建。
+        {
           ...stored[adminIndex],
           role: 'admin',
           displayName: ADMIN_DISPLAY_NAME,
-          passwordHash: hashPassword(ADMIN_PASSWORD),
         }
       : {
           id: 'admin-easonzhou',
           username: ADMIN_USERNAME,
           displayName: ADMIN_DISPLAY_NAME,
           role: 'admin',
-          passwordHash: hashPassword(ADMIN_PASSWORD),
+          passwordHash: hashPassword(ADMIN_BOOTSTRAP_PASSWORD),
           createdAt: nowIso(),
         }
 
@@ -204,6 +210,31 @@ export function createAccount(input: AccountInput): CreateAccountResult {
   }
   writeAccounts([...accounts, account])
   return { ok: true, account }
+}
+
+export function changePassword(
+  accountId: string,
+  currentPassword: string,
+  nextPassword: string,
+): string | null {
+  const accounts = getAccounts()
+  const account = accounts.find((item) => item.id === accountId)
+  if (!account) return '账号不存在'
+  if (account.passwordHash !== hashPassword(currentPassword)) {
+    return '当前密码不正确'
+  }
+  if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+    return `新密码至少 ${MIN_PASSWORD_LENGTH} 位`
+  }
+  if (nextPassword === currentPassword) return '新密码不能与当前密码相同'
+  writeAccounts(
+    accounts.map((item) =>
+      item.id === accountId
+        ? { ...item, passwordHash: hashPassword(nextPassword) }
+        : item,
+    ),
+  )
+  return null
 }
 
 export function deleteAccount(id: string) {

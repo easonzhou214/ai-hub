@@ -993,20 +993,6 @@ svg {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 13%, transparent);
 }
 
-.provider-logo.logo-sm {
-  width: 30px;
-  height: 30px;
-  font-size: 13px;
-  border-radius: 8px;
-}
-
-.provider-logo.logo-lg {
-  width: 40px;
-  height: 40px;
-  font-size: 14.5px;
-  border-radius: 11px;
-}
-
 /* ============================== Popovers ============================== */
 
 .popover-anchor {
@@ -1442,10 +1428,6 @@ svg {
   border-radius: 50%;
 }
 
-.provider-group-image .provider-group-dot {
-  background: #bd5b94;
-}
-
 .provider-group-count {
   display: inline-flex;
   align-items: center;
@@ -1797,21 +1779,6 @@ svg {
   color: #242a31;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.pt-mini-tag {
-  flex: 0 0 auto;
-  padding: 1px 4px;
-  font-size: 12.5px;
-  font-weight: 600;
-  color: #708074;
-  background: #f2f6f3;
-  border-radius: 4px;
-}
-
-.pt-mini-tag.balance {
-  color: #9a7a43;
-  background: #faf5ea;
 }
 
 .pt-sub {
@@ -3520,27 +3487,6 @@ svg {
 }
 
 /* ============================== Sync states & boot ============================== */
-
-.sync-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex: 0 0 auto;
-  height: 19px;
-  padding: 0 4px;
-  font-size: 12.5px;
-  font-weight: 600;
-  line-height: 1;
-  color: #0d8a62;
-  white-space: nowrap;
-  background: #eef9f3;
-  border: 1px solid #e2f2e9;
-  border-radius: 4px;
-}
-
-.sync-chip svg {
-  color: #14a077;
-}
 
 .pt-live {
   display: inline-flex;

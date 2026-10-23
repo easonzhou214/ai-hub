@@ -1,18 +1,12 @@
 import { Icon } from '../icons'
 import type { Provider } from '../types'
+import { describeProvider } from '../providerView'
 import {
   cx,
-  expiryLabel,
-  formatMoney,
   formatNumber,
   formatPercent,
   formatQuota,
-  getQuotaState,
-  getStatus,
-  isInterfaceSynced,
-  loginBrand,
   logoText,
-  remainingPercent,
   resetLabel,
 } from '../utils'
 import {
@@ -37,31 +31,23 @@ export function ProviderCard({
   /** Codex is currently using this provider. */
   codexActive?: boolean
 }) {
-  const quota = getQuotaState(provider)
-  const remaining = remainingPercent(quota.percent)
-  const status = getStatus(provider)
-  const expiry = expiryLabel(provider)
-  const synced = isInterfaceSynced(provider)
-  const needsLogin = Boolean(provider.loginRequired && provider.loginProvider)
-  const loginLabel = loginBrand(provider)
-  const unknown = Boolean(provider.limitUnknown)
-  const hasPlanQuota = quota.percent !== null && quota.total !== null
-  const hasWallet = provider.accountBalance !== undefined
-  const hasAccountBalance = hasWallet && !hasPlanQuota
-  const hasBoth = hasPlanQuota && hasWallet
-  const planBased = Boolean(
-    synced &&
-      quota.percent !== null &&
-      (provider.resetAt || provider.syncMode === 'pixellab'),
-  )
-  const noData = Boolean(
-    provider.syncError &&
-      provider.quotaTotal <= 0 &&
-      provider.accountBalance === undefined &&
-      !provider.lifetimeUsed,
-  )
-  const cumulative = provider.lifetimeUsed ?? quota.used
-  const money = (value: number) => formatMoney(value, provider.currency)
+  const {
+    quota,
+    remaining,
+    status,
+    expiry,
+    synced,
+    needsLogin,
+    loginLabel,
+    unlimited,
+    unknown,
+    hasAccountBalance,
+    hasBoth,
+    planBased,
+    noData,
+    cumulative,
+    money,
+  } = describeProvider(provider)
   const availableLabel = hasAccountBalance
     ? `余额 ${money(provider.accountBalance ?? 0)}`
     : provider.billing === 'quota'
@@ -108,6 +94,12 @@ export function ProviderCard({
               <strong>读取失败</strong>
               <span className="pc-usage-sep">·</span>
               检查接口或密钥
+            </span>
+          ) : unlimited ? (
+            <span className="pc-usage-value">
+              <strong>不限额度</strong>
+              <span className="pc-usage-sep">·</span>
+              累计 {money(cumulative)}
             </span>
           ) : unknown ? (
             <span className="pc-usage-value">
@@ -160,6 +152,16 @@ export function ProviderCard({
             <div className="pc-usage-meta">
               <span>API Key 不限额</span>
               <span>账户额度未授权查询</span>
+            </div>
+          </>
+        ) : unlimited ? (
+          <>
+            <div className="unlimited-bar" aria-hidden="true">
+              <span />
+            </div>
+            <div className="pc-usage-meta">
+              <span>API Key 不限额</span>
+              <span>账户额度未通过接口返回</span>
             </div>
           </>
         ) : hasAccountBalance ? (
