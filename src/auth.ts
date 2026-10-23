@@ -137,6 +137,18 @@ export function getAccounts(): Account[] {
   return next
 }
 
+/**
+ * 用服务端返回的账号列表覆盖本地副本。
+ *
+ * 用于多设备同步：另一台机器新增/删除账号后，这边拉到的列表会覆盖本地。
+ * 非法条目直接丢弃；管理员账号由 getAccounts() 兜底补齐。
+ */
+export function replaceAccounts(input: unknown[]) {
+  const accounts = input.filter(isAccount)
+  if (!accounts.length) return
+  writeAccounts(accounts)
+}
+
 export function authenticate(username: string, password: string): Account | null {
   const normalized = username.trim().toLowerCase()
   if (!normalized || !password) return null

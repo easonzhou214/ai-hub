@@ -15,6 +15,7 @@ import {
   deleteAccount,
   getAccounts,
   loadSession,
+  replaceAccounts,
   saveSession,
   type Account,
   type AccountInput,
@@ -34,6 +35,7 @@ import {
   type CodexCurrentSnapshot,
 } from './codex'
 import { createSeedProviders, createSeedSyncedAt } from './data'
+import { useHubState } from './hubState'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
 import { UsagePage } from './pages/Usage'
@@ -52,40 +54,8 @@ import {
   providerAlerts,
 } from './utils'
 
-const PROVIDERS_KEY = 'aihub.providers.v6'
-const SYNCED_AT_KEY = 'aihub.syncedAt.v6'
-const AUTO_SYNC_KEY = 'aihub.autoSync.v1'
 const AUTO_SYNC_INTERVAL_MS = 5 * 60_000
 const PAGE_KEYS: PageKey[] = ['overview', 'providers', 'usage']
-
-function usePersistentState<T>(
-  key: string,
-  createInitial: () => T,
-  validate?: (value: unknown) => value is T,
-) {
-  const [value, setValue] = useState<T>(() => {
-    try {
-      const raw = window.localStorage.getItem(key)
-      if (raw) {
-        const parsed: unknown = JSON.parse(raw)
-        if (!validate || validate(parsed)) return parsed as T
-      }
-    } catch {
-      // Ignore malformed storage and fall back to demo data.
-    }
-    return createInitial()
-  })
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(key, JSON.stringify(value))
-    } catch {
-      // Storage may be unavailable in private mode; the UI keeps working.
-    }
-  }, [key, value])
-
-  return [value, setValue] as const
-}
 
 function parsePageFromHash(): PageKey {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -161,38 +131,35 @@ async function syncImportedProviders(providers: Provider[]) {
 }
 
 export default function App() {
-  const [hadStoredProviders] = useState(() => {
-    try {
-      return window.localStorage.getItem(PROVIDERS_KEY) !== null
-    } catch {
-      return false
-    }
+  const [user, setUser] = useState<Account | null>(() => loadSession())
+  const [accounts, setAccounts] = useState<Account[]>(() => getAccounts())
+
+  // 供应商、额度、账号由服务端统一保存（静态部署时退回 localStorage）。
+  const {
+    providers,
+    setProviders,
+    lastSyncedAt,
+    setLastSyncedAt,
+    autoSync,
+    setAutoSync,
+    mode: storageMode,
+    ready: hubReady,
+    hasData: hubHasData,
+    requestSave: requestHubSave,
+    pushLocal,
+  } = useHubState({
+    providerValidator: isProviderArray,
+    readAccounts: getAccounts,
+    writeAccounts: replaceAccounts,
+    onRemoteAccounts: () => setAccounts(getAccounts()),
   })
-  const [providers, setProviders] = usePersistentState<Provider[]>(
-    PROVIDERS_KEY,
-    createSeedProviders,
-    isProviderArray,
-  )
-  const [lastSyncedAt, setLastSyncedAt] = usePersistentState<string>(
-    SYNCED_AT_KEY,
-    createSeedSyncedAt,
-    (value): value is string => typeof value === 'string',
-  )
-  const [autoSync, setAutoSync] = usePersistentState<boolean>(
-    AUTO_SYNC_KEY,
-    () => true,
-    (value): value is boolean => typeof value === 'boolean',
-  )
+
   const [codexCurrent, setCodexCurrent] = useState<CodexCurrentSnapshot | null>(
     null,
   )
-  const [booted, setBooted] = useState(hadStoredProviders)
-  const [user, setUser] = useState<Account | null>(() => loadSession())
-  const [accounts, setAccounts] = useState<Account[]>(() => getAccounts())
+  const [booted, setBooted] = useState(false)
   const [accountsOpen, setAccountsOpen] = useState(false)
-  const [bootMessage, setBootMessage] = useState(
-    '正在从 CC Switch 读取供应商…',
-  )
+  const [bootMessage, setBootMessage] = useState('正在载入已保存的配置…')
   const [importing, setImporting] = useState(false)
   const [page, setPage] = useState<PageKey>(parsePageFromHash)
   const [drawerOpen, setDrawerOpen] = useState(false)
@@ -249,10 +216,11 @@ export default function App() {
       const result = createAccount(input)
       if (!result.ok) return result.error
       setAccounts(getAccounts())
+      requestHubSave()
       notify(`已添加普通账号 ${result.account.username}`)
       return null
     },
-    [notify],
+    [notify, requestHubSave],
   )
 
   const handleDeleteAccount = useCallback(
@@ -262,10 +230,19 @@ export default function App() {
         return
       }
       setAccounts(getAccounts())
+      requestHubSave()
       notify(`已删除账号 ${account.username}`)
     },
-    [notify],
+    [notify, requestHubSave],
   )
+
+  const handlePushLocal = useCallback(async () => {
+    const ok = await pushLocal()
+    notify(
+      ok ? '已用本机配置覆盖服务端' : '推送失败：当前没有连接服务端',
+      ok ? 'success' : 'error',
+    )
+  }, [notify, pushLocal])
 
   const navigate = useCallback((next: PageKey) => {
     setPage(next)
@@ -289,7 +266,14 @@ export default function App() {
   }, [page])
 
   useEffect(() => {
-    if (booted || !user) return
+    if (booted || !user || !hubReady) return
+
+    // 服务端（或本地缓存）里已经有供应商，直接进入界面，不再重复导入。
+    if (hubHasData) {
+      setBooted(true)
+      return
+    }
+
     let cancelled = false
 
     const boot = async () => {
@@ -320,6 +304,8 @@ export default function App() {
         )
       } catch {
         if (cancelled) return
+        setProviders(createSeedProviders())
+        setLastSyncedAt(createSeedSyncedAt())
         setBooted(true)
         notify('未读取到 CC Switch 配置，已载入演示数据')
       }
@@ -329,7 +315,15 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [booted, notify, setLastSyncedAt, setProviders, user])
+  }, [
+    booted,
+    hubHasData,
+    hubReady,
+    notify,
+    setLastSyncedAt,
+    setProviders,
+    user,
+  ])
 
   // Pick up providers added to CC Switch after the initial import. Runs once
   // per app load; the explicit import button remains the way to refresh config.
@@ -939,6 +933,8 @@ export default function App() {
         lastSyncedAt={lastSyncedAt}
         alerts={alerts}
         user={user}
+        storageMode={storageMode}
+        onPushLocal={handlePushLocal}
         onRefresh={handleRefresh}
         onToggleAutoSync={() => setAutoSync((current) => !current)}
         onImport={handleImport}

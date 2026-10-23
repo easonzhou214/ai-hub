@@ -196,6 +196,45 @@ svg {
   margin-left: auto;
 }
 
+.storage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #f5f7f8;
+  color: #6b7683;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.storage-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a9b2bc;
+}
+
+.storage-chip.server {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-deep);
+}
+
+.storage-chip.server .storage-chip-dot {
+  background: var(--accent);
+  box-shadow: 0 0 0 2px rgba(15, 157, 114, 0.14);
+}
+
+@media (max-width: 900px) {
+  .storage-chip {
+    display: none;
+  }
+}
+
 .auto-sync {
   display: flex;
   align-items: center;

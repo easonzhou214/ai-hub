@@ -46,7 +46,7 @@
   - 按供应商拆分的累计用量构成
   - 周期额度、重置日期、账户余额、累计用量与同步状态明细
 - **本地体验**
-  - `localStorage` 持久化；通知中心；响应式布局
+  - 供应商、额度、账号优先存到本地服务端，`localStorage` 只做缓存；通知中心；响应式布局
   - 导出配置不含 API Key；可恢复演示数据
 - **账号与权限**
   - 打开先登录：管理员 `easonzhou`，普通账号由管理员创建
@@ -86,7 +86,30 @@ npm run build
 npm run preview
 ```
 
-> CC Switch 供应商的额度查询依赖本地 Vite 中间件：它会使用 CC Switch 中的 API Key 请求供应商额度接口，避免部分供应商后台接口没有 CORS 头的问题。把 `dist/` 静态部署到其他服务器时，CC Switch 导入与额度查询不可用（PixelLab 是浏览器直连，仍然可用），额度仍可手动维护。启动时若读不到 CC Switch 配置，会自动回退到演示数据。
+> CC Switch 供应商的额度查询依赖本地 Vite 中间件：它会使用 CC Switch 中的 API Key 请求供应商额度接口，避免部分供应商后台接口没有 CORS 头的问题。把 `dist/` 交给 nginx 之类的纯静态服务器时，`/api/*` 不存在，CC Switch 导入、额度查询和服务端存储都会不可用（PixelLab 是浏览器直连，仍然可用），应用自动退回「仅本机」模式。启动时若读不到 CC Switch 配置，会自动回退到演示数据。
+
+### 多设备 / 多地址同步
+
+`npm run dev` 和 `npm run preview` 都带一个状态存储接口 `/api/state`，供应商、额度、账号会写进 `.local/hub-state.json`，因此同一个服务下的不同地址（例如 `127.0.0.1` 与服务器 IP）看到的是同一份数据。
+
+- 服务端可用时，顶栏显示「服务端已连接」；数据写入文件，浏览器只保留缓存
+- 服务端不可用（纯静态部署）时，顶栏显示「仅本机」，行为与旧版本一致
+- 多端同时修改用 `revision` 做整份文档的乐观锁，冲突时以服务端为准；打开着的页面每 15 秒轮询一次，切换回标签页时也会立即拉取
+- 第一次升级到该版本时，如果服务端文件还不存在，浏览器会把已有的 `localStorage` 数据上传作为初始状态；之后所有设备都以服务端为准
+- 首次加载会把服务端与本地缓存按 `id` 合并：同 id 取 `updatedAt` 较新的，本地独有的供应商会保留并推回服务端。因此先打开哪台设备都不会吞掉另一台独有的配置（代价是离线期间在别处删掉的供应商可能被这台设备重新带回）
+- 存储路径默认是 `./.local/hub-state.json`（已 gitignore），可用环境变量 `AIHUB_STATE_FILE` 指定别的路径
+
+在服务器上跑同一个服务（而不是只丢 `dist/`）：
+
+```bash
+npm install
+npm run build
+npm run serve   # 监听 0.0.0.0:4173，同时提供页面与 /api/*
+```
+
+> ⚠️ `/api/state` 没有鉴权，文件里的 API Key 是明文（权限 0600）。公网部署请至少在反向代理层加 Basic Auth / IP 白名单；这仍然是「能打开页面就能看到配置」的模型，不要当成多人隔离方案。
+>
+> 另外，Krill / Aixor 的登录窗口会开在**运行服务的那台机器**上。如果服务跑在无桌面的服务器，登录按钮点了也看不到窗口；这类场景建议只在一台有桌面的机器上跑服务，其他设备通过隧道 / 反向代理访问同一个地址。
 
 ## Krill / Aixor 登录助手
 
@@ -158,8 +181,9 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
 2. 本地 Vite 中间件以只读方式打开 `~/.cc-switch/cc-switch.db`，使用其中的 API Key 请求 New API 风格额度接口。
 3. 对 Krill Code，本地服务启动独立的 Chrome 登录窗口；登录完成后通过 DevTools 协议在 Krill 页面内调用额度接口，JWT 不落 AI Hub 前端。
 4. 浏览器不直接请求供应商后台；额度数据由本地服务转发。
-5. 供应商配置与导入时得到的 API Key 会保存在当前浏览器 `localStorage`；导出的 JSON 会剔除 `apiKey`，只保留 `hasApiKey`。
+5. 供应商配置与导入时得到的 API Key 会写进服务端的 `.local/hub-state.json`，并在浏览器 `localStorage` 留一份缓存；导出的 JSON 会剔除 `apiKey`，只保留 `hasApiKey`。
 6. 本地导入、Codex 当前供应商、额度查询、同步日志与登录接口只接受 loopback 请求，并设置 `no-store`。
+7. `/api/state` 不做 loopback 限制（否则远端设备无法同步），也不做鉴权；它只应部署在可信网络或反向代理鉴权之后。
 
 注意：
 
@@ -180,6 +204,8 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
 
 - React 19 + TypeScript + Vite
 - `vite-plugins/cc-switch.ts`：本地只读 CC Switch 桥接 + 供应商额度查询代理 + 登录 / 日志路由
+- `vite-plugins/state-store.ts`：`/api/state` 读写、revision 乐观锁、原子写 `.local/hub-state.json`
+- `src/hubState.ts`：服务端优先 + 本地缓存的状态钩子，负责首次迁移、防抖写入与 15 秒轮询
 - `vite-plugins/sync-log.ts`：同步 JSONL 日志、脱敏、30 天保留与读取接口
 - `vite-plugins/krill.ts`：独立 Chrome 登录窗口，Krill `/api/subscription` 与 Aixor `/api/user/auth/refresh` + `/api/user/self` 读取
 - `src/billing.ts`：额度快照解析、周期计算、Krill 账户数据与登录状态映射

@@ -14,6 +14,8 @@ interface TopBarProps {
   alerts: AlertItem[]
   importing: boolean
   user: Account
+  storageMode: 'server' | 'local'
+  onPushLocal: () => void
   onRefresh: () => void
   onToggleAutoSync: () => void
   onImport: () => void
@@ -32,6 +34,8 @@ export function TopBar({
   alerts,
   importing,
   user,
+  storageMode,
+  onPushLocal,
   onRefresh,
   onToggleAutoSync,
   onImport,
@@ -84,6 +88,18 @@ export function TopBar({
       </div>
 
       <div className="topbar-right" ref={actionsRef}>
+        <span
+          className={cx('storage-chip', storageMode)}
+          title={
+            storageMode === 'server'
+              ? '供应商、额度与账号保存在服务端，同一地址下多台设备共用一份数据'
+              : '未连接服务端，数据只保存在当前浏览器'
+          }
+        >
+          <span className="storage-chip-dot" aria-hidden="true" />
+          {storageMode === 'server' ? '服务端已连接' : '仅本机'}
+        </span>
+
         <div className="auto-sync" title="开启后每 5 分钟自动同步一次">
           <span className="auto-sync-label">自动同步</span>
           <Switch
@@ -231,6 +247,20 @@ export function TopBar({
                 {importing ? '正在导入…' : '从 CC Switch 导入'}
                 <span className="menu-hint">本地</span>
               </button>
+              {storageMode === 'server' && (
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => {
+                    setOpen(null)
+                    onPushLocal()
+                  }}
+                >
+                  <Icon name="server" size={15} />
+                  用本机配置覆盖服务端
+                  <span className="menu-hint">同步</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="menu-item"
@@ -294,7 +324,9 @@ export function TopBar({
                 <span className="menu-hint">@{user.username}</span>
               </button>
               <div className="popover-foot">
-                AI Hub v0.2 · 数据保存在此浏览器
+                {storageMode === 'server'
+                  ? 'AI Hub v0.2 · 数据保存在服务端，多设备共享'
+                  : 'AI Hub v0.2 · 数据保存在此浏览器'}
               </div>
             </div>
           )}
