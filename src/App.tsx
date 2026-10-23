@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { AccountManager } from './components/AccountManager'
 import { BootScreen } from './components/BootScreen'
 import { LoginDialog, type LoginUiState } from './components/LoginDialog'
+import { LoginPage } from './components/LoginPage'
 import { ConfirmDialog, Toast, type ConfirmState } from './components/Overlays'
 import { ProviderDrawer } from './components/ProviderDrawer'
 import { Sidebar } from './components/Sidebar'
 import { SyncLogDialog } from './components/SyncLogDialog'
 import { TopBar } from './components/TopBar'
+import {
+  authenticate,
+  clearSession,
+  createAccount,
+  deleteAccount,
+  getAccounts,
+  loadSession,
+  saveSession,
+  type Account,
+  type AccountInput,
+} from './auth'
 import {
   applyBillingSnapshot,
   fetchProviderBilling,
@@ -174,6 +187,9 @@ export default function App() {
     null,
   )
   const [booted, setBooted] = useState(hadStoredProviders)
+  const [user, setUser] = useState<Account | null>(() => loadSession())
+  const [accounts, setAccounts] = useState<Account[]>(() => getAccounts())
+  const [accountsOpen, setAccountsOpen] = useState(false)
   const [bootMessage, setBootMessage] = useState(
     '正在从 CC Switch 读取供应商…',
   )
@@ -210,6 +226,47 @@ export default function App() {
 
   const dismissToast = useCallback(() => setToast(null), [])
 
+  const handleSignIn = useCallback((username: string, password: string) => {
+    const account = authenticate(username, password)
+    if (!account) return '用户名或密码不正确'
+    saveSession(account)
+    setUser(account)
+    setAccounts(getAccounts())
+    return null
+  }, [])
+
+  const handleLogout = useCallback(() => {
+    clearSession()
+    setUser(null)
+    setAccountsOpen(false)
+    setDrawerOpen(false)
+    setLogsOpen(false)
+    setLogin(null)
+  }, [])
+
+  const handleCreateAccount = useCallback(
+    (input: AccountInput) => {
+      const result = createAccount(input)
+      if (!result.ok) return result.error
+      setAccounts(getAccounts())
+      notify(`已添加普通账号 ${result.account.username}`)
+      return null
+    },
+    [notify],
+  )
+
+  const handleDeleteAccount = useCallback(
+    (account: Account) => {
+      if (!deleteAccount(account.id)) {
+        notify('管理员账号不可删除', 'error')
+        return
+      }
+      setAccounts(getAccounts())
+      notify(`已删除账号 ${account.username}`)
+    },
+    [notify],
+  )
+
   const navigate = useCallback((next: PageKey) => {
     setPage(next)
     window.location.hash = `/${next}`
@@ -232,7 +289,7 @@ export default function App() {
   }, [page])
 
   useEffect(() => {
-    if (booted) return
+    if (booted || !user) return
     let cancelled = false
 
     const boot = async () => {
@@ -272,12 +329,12 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [booted, notify, setLastSyncedAt, setProviders])
+  }, [booted, notify, setLastSyncedAt, setProviders, user])
 
   // Pick up providers added to CC Switch after the initial import. Runs once
   // per app load; the explicit import button remains the way to refresh config.
   useEffect(() => {
-    if (!booted) return
+    if (!booted || !user) return
     let cancelled = false
 
     const addNewProviders = async () => {
@@ -333,7 +390,7 @@ export default function App() {
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [booted])
+  }, [booted, user])
 
   const alerts = useMemo(
     () =>
@@ -642,7 +699,7 @@ export default function App() {
   // machine wakes or the network comes back. After wake-from-sleep Safari can
   // become visible before Wi-Fi/DNS is ready, so wait before hitting APIs.
   useEffect(() => {
-    if (!booted || !autoSync) return
+    if (!booted || !autoSync || !user) return
 
     const isStale = () => {
       const last = new Date(lastSyncedAtRef.current).getTime()
@@ -685,11 +742,11 @@ export default function App() {
       document.removeEventListener('visibilitychange', handleVisibility)
       window.removeEventListener('online', handleOnline)
     }
-  }, [autoSync, booted])
+  }, [autoSync, booted, user])
 
   // Follow Codex's active provider even when quota data is not due for a sync.
   useEffect(() => {
-    if (!booted) return
+    if (!booted || !user) return
     void refreshCodexCurrent()
     const poll = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshCodexCurrent()
@@ -702,7 +759,7 @@ export default function App() {
       window.clearInterval(poll)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [booted, refreshCodexCurrent])
+  }, [booted, refreshCodexCurrent, user])
 
   const handleLoginProvider = useCallback(
     async (provider: Provider) => {
@@ -865,6 +922,10 @@ export default function App() {
   )
   const codexProviderId = codexProvider?.id
 
+  if (!user) {
+    return <LoginPage onSignIn={handleSignIn} accountCount={accounts.length} />
+  }
+
   if (!booted) {
     return <BootScreen message={bootMessage} />
   }
@@ -877,6 +938,7 @@ export default function App() {
         autoSync={autoSync}
         lastSyncedAt={lastSyncedAt}
         alerts={alerts}
+        user={user}
         onRefresh={handleRefresh}
         onToggleAutoSync={() => setAutoSync((current) => !current)}
         onImport={handleImport}
@@ -887,6 +949,8 @@ export default function App() {
         onExport={handleExport}
         onOpenLogs={() => setLogsOpen(true)}
         onReset={handleReset}
+        onManageAccounts={() => setAccountsOpen(true)}
+        onLogout={handleLogout}
       />
 
       <div className="app-body">
@@ -950,6 +1014,14 @@ export default function App() {
       <ConfirmDialog state={confirm} onCancel={() => setConfirm(null)} />
 
       <SyncLogDialog open={logsOpen} onClose={() => setLogsOpen(false)} />
+
+      <AccountManager
+        open={accountsOpen}
+        accounts={accounts}
+        onClose={() => setAccountsOpen(false)}
+        onCreate={handleCreateAccount}
+        onDelete={handleDeleteAccount}
+      />
 
       <LoginDialog
         state={login}

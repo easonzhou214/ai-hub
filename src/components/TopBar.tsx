@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import type { Account } from '../auth'
 import { Icon } from '../icons'
 import type { AlertItem } from '../types'
 import { cx, relativeTime } from '../utils'
@@ -12,6 +13,7 @@ interface TopBarProps {
   lastSyncedAt: string
   alerts: AlertItem[]
   importing: boolean
+  user: Account
   onRefresh: () => void
   onToggleAutoSync: () => void
   onImport: () => void
@@ -19,6 +21,8 @@ interface TopBarProps {
   onExport: () => void
   onOpenLogs: () => void
   onReset: () => void
+  onManageAccounts: () => void
+  onLogout: () => void
 }
 
 export function TopBar({
@@ -27,6 +31,7 @@ export function TopBar({
   lastSyncedAt,
   alerts,
   importing,
+  user,
   onRefresh,
   onToggleAutoSync,
   onImport,
@@ -34,6 +39,8 @@ export function TopBar({
   onExport,
   onOpenLogs,
   onReset,
+  onManageAccounts,
+  onLogout,
 }: TopBarProps) {
   const [open, setOpen] = useState<PopoverKey>(null)
   const actionsRef = useRef<HTMLDivElement>(null)
@@ -63,12 +70,17 @@ export function TopBar({
   const toggle = (key: Exclude<PopoverKey, null>) =>
     setOpen((current) => (current === key ? null : key))
 
+  const isAdmin = user.role === 'admin'
+  const initial =
+    user.displayName.trim().charAt(0).toUpperCase() ||
+    user.username.charAt(0).toUpperCase() ||
+    'E'
+
   return (
     <header className="topbar">
       <div className="topbar-brand">
         <BrandMark />
         <span className="brand-name">AI Hub</span>
-        <span className="brand-tag">BETA</span>
       </div>
 
       <div className="topbar-right" ref={actionsRef}>
@@ -181,21 +193,25 @@ export function TopBar({
           <button
             type="button"
             className={cx('avatar-button', open === 'account' && 'is-open')}
-            aria-label="账户与设置"
+            aria-label={`账户与设置（${user.displayName}）`}
             aria-haspopup="dialog"
             aria-expanded={open === 'account'}
             onClick={() => toggle('account')}
           >
-            <span className="avatar">E</span>
+            <span className="avatar">{initial}</span>
             <span className="avatar-presence" />
           </button>
           {open === 'account' && (
             <div className="popover account-popover" role="dialog" aria-label="账户">
               <div className="account-head">
-                <span className="avatar avatar-lg">E</span>
+                <span className="avatar avatar-lg">{initial}</span>
                 <div>
-                  <strong>Eason 的个人工作区</strong>
-                  <span>本地演示模式 · 未连接云端</span>
+                  <strong>{user.displayName} 的个人工作区</strong>
+                  <span>
+                    {isAdmin
+                      ? '管理员 · 本地演示模式'
+                      : `@${user.username} · 普通账号`}
+                  </span>
                 </div>
               </div>
               <div className="popover-separator" />
@@ -239,6 +255,20 @@ export function TopBar({
                 同步日志
                 <span className="menu-hint">诊断</span>
               </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="menu-item"
+                  onClick={() => {
+                    setOpen(null)
+                    onManageAccounts()
+                  }}
+                >
+                  <Icon name="users" size={15} />
+                  账号管理
+                  <span className="menu-hint">管理员</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="menu-item"
@@ -250,6 +280,18 @@ export function TopBar({
                 <Icon name="rotate" size={15} />
                 重置演示数据
                 <span className="menu-hint">本地</span>
+              </button>
+              <button
+                type="button"
+                className="menu-item"
+                onClick={() => {
+                  setOpen(null)
+                  onLogout()
+                }}
+              >
+                <Icon name="logout" size={15} />
+                退出登录
+                <span className="menu-hint">@{user.username}</span>
               </button>
               <div className="popover-foot">
                 AI Hub v0.2 · 数据保存在此浏览器

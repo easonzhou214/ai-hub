@@ -38,6 +38,8 @@ export type IconName =
   | 'gauge'
   | 'layers'
   | 'arrow-right'
+  | 'users'
+  | 'logout'
   | 'logo'
 
 interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {
@@ -270,6 +272,21 @@ const paths: Record<IconName, ReactNode> = {
     </>
   ),
   'arrow-right': <path d="M4 12h15M13 6l6 6-6 6" />,
+  users: (
+    <>
+      <circle cx="9.2" cy="8.4" r="3.6" />
+      <path d="M2.8 20.2c0-3.4 2.9-5.6 6.4-5.6s6.4 2.2 6.4 5.6" />
+      <path d="M16.4 5.2a3.4 3.4 0 0 1 0 6.5" />
+      <path d="M18.2 14.9c1.8.6 3 2 3 3.9" />
+    </>
+  ),
+  logout: (
+    <>
+      <path d="M14.5 3.5H6.2A2.2 2.2 0 0 0 4 5.7v12.6a2.2 2.2 0 0 0 2.2 2.2h8.3" />
+      <path d="M17.5 8.5 21 12l-3.5 3.5" />
+      <path d="M21 12H9.8" />
+    </>
+  ),
   logo: (
     <path
       d="M12 2.8 13.9 9.4l6.6 1.9-6.6 1.9L12 19.8l-1.9-6.6L3.5 11.3l6.6-1.9Z"

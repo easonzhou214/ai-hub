@@ -48,6 +48,11 @@
 - **本地体验**
   - `localStorage` 持久化；通知中心；响应式布局
   - 导出配置不含 API Key；可恢复演示数据
+- **账号与权限**
+  - 打开先登录：管理员 `easonzhou`，普通账号由管理员创建
+  - 管理员在头像菜单「账号管理」里增删普通账号；管理员账号标记为不可删除
+  - 普通账号可正常查看、编辑、同步供应商，但看不到「账号管理」入口
+  - 登录态存在 `localStorage`，刷新后保持；「退出登录」清掉会话
 
 ## 启动
 
@@ -137,6 +142,16 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
 - 页面重新可见且上次有失败时，延迟 1.5 秒再同步；系统唤醒或网络恢复（`online`）后会再自动重试，避免唤醒瞬间把全部供应商标记为失败
 - 若仍是持续失败，日志中的 `code`（如 `ENOTFOUND`、`ECONNRESET`、`UND_ERR_CONNECT_TIMEOUT`）可直接区分 DNS / 代理 / 超时问题
 
+## 账号与登录
+
+- **管理员**：`easonzhou` / `bob215921`（内置账号，随前端包发布，不可删除、不可改名）
+- **普通账号**：登录后 → 右上角头像 →「账号管理」→ 填用户名 / 显示名称（可选）/ 密码（≥ 6 位）→「添加账号」
+- **删除账号**：账号管理列表里点垃圾桶图标，二次确认后删除；管理员行只显示「不可删除」
+- **存储**：账号存在 `aihub.accounts.v1`，会话存在 `aihub.session.v2`，都在当前浏览器
+- **密码处理**：`src/auth.ts` 里做一次 FNV 加盐摘要后存储，避免明文出现在 DevTools 里
+
+> ⚠️ 这是本地单机模式的门禁，不是真实认证：管理员口令随 JS 打包，能打开开发者工具的人都能读到。若要多人共用，需要把账号体系挪到服务端。
+
 ## 数据流与安全
 
 1. 浏览器请求同源的 `/api/cc-switch/providers`、`/api/cc-switch/usage`、`/api/codex/current`、`/api/cc-switch/logs` 和 `/api/cc-switch/login/*`。
@@ -170,6 +185,7 @@ Krill Code 的 relay key（`nb_`）只能调用推理接口；Aixor 的 relay ke
 - `src/billing.ts`：额度快照解析、周期计算、Krill 账户数据与登录状态映射
 - `src/syncLog.ts` / `src/components/SyncLogDialog.tsx`：浏览器侧日志上报与「同步日志」查看器
 - `src/components/LoginDialog.tsx`：登录助手交互与轮询提示
+- `src/auth.ts` / `src/components/LoginPage.tsx` / `src/components/AccountManager.tsx`：本地账号、登录页与管理员账号管理
 - `src/ccSwitch.ts`：CC Switch 配置到应用供应商模型的映射
 - `src/pages/Overview.tsx` / `Providers.tsx` / `Usage.tsx`
 - `src/components/ProviderDrawer.tsx`：手动配置与只读接口额度视图
