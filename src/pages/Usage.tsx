@@ -31,6 +31,8 @@ type Filter = 'all' | ProviderType
 
 interface UsagePageProps {
   providers: Provider[]
+  /** 只有管理员能点开编辑，普通账号只读。 */
+  canManage: boolean
   onEdit: (provider: Provider) => void
   onNavigate: (page: PageKey) => void
   codexProviderId?: string
@@ -63,6 +65,7 @@ const ATTENTION_STATUSES = new Set([
 
 export function UsagePage({
   providers,
+  canManage,
   onEdit,
   onNavigate,
   codexProviderId,
@@ -521,11 +524,12 @@ export function UsagePage({
                       !provider.enabled && 'is-disabled',
                       codexActive && 'is-codex-active',
                     )}
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`编辑 ${provider.name}`}
-                    onClick={() => onEdit(provider)}
+                    role={canManage ? 'button' : undefined}
+                    tabIndex={canManage ? 0 : undefined}
+                    aria-label={canManage ? `编辑 ${provider.name}` : undefined}
+                    onClick={canManage ? () => onEdit(provider) : undefined}
                     onKeyDown={(event) => {
+                      if (!canManage) return
                       if (event.key === 'Enter' || event.key === ' ') {
                         event.preventDefault()
                         onEdit(provider)

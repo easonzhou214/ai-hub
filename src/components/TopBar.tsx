@@ -19,10 +19,10 @@ interface TopBarProps {
   syncRunner: string
   /** 是不是从别的设备打开（同步由服务器代劳）。 */
   isRemoteClient: boolean
-  /** 这台设备读不到 CC Switch 时，置灰同步按钮的原因。 */
-  syncBlockedReason: string | null
-  /** CC Switch 相关动作（导入 / 网页登录）在这台设备上是否可用。 */
-  bridgeAvailable: boolean
+  /** 只有管理员能改供应商配置；普通账号只读。 */
+  canManage: boolean
+  /** 导入 CC Switch 在这台设备上不可用时的原因。 */
+  importBlockedReason: string | null
   onPushLocal: () => void
   onRefresh: () => void
   onToggleAutoSync: () => void
@@ -44,8 +44,8 @@ export function TopBar({
   storageMode,
   syncRunner,
   isRemoteClient,
-  syncBlockedReason,
-  bridgeAvailable,
+  canManage,
+  importBlockedReason,
   onPushLocal,
   onRefresh,
   onToggleAutoSync,
@@ -111,12 +111,9 @@ export function TopBar({
           type="button"
           className="btn btn-ghost btn-sm sync-button"
           onClick={onRefresh}
-          disabled={syncing || Boolean(syncBlockedReason)}
+          disabled={syncing}
           aria-label="同步供应商额度"
-          title={
-            syncBlockedReason ??
-            `${syncRunner}执行 · 上次同步 ${relativeTime(lastSyncedAt)}`
-          }
+          title={`${syncRunner}执行 · 上次同步 ${relativeTime(lastSyncedAt)}`}
         >
           <Icon
             name="refresh"
@@ -221,7 +218,7 @@ export function TopBar({
                   <span>
                     {isAdmin
                       ? '管理员 · 全部权限'
-                      : `@${user.username} · 普通账号`}
+                      : `@${user.username} · 普通账号（只读）`}
                     {' · '}
                     {isRemoteClient ? '客户端（同步在服务器）' : '本机'}
                   </span>
@@ -235,11 +232,11 @@ export function TopBar({
                   setOpen(null)
                   onImport()
                 }}
-                disabled={!bridgeAvailable}
+                disabled={!canManage || Boolean(importBlockedReason)}
                 title={
-                  bridgeAvailable
-                    ? undefined
-                    : 'CC Switch 只存在运行服务的那台机器上，这台设备读不到'
+                  !canManage
+                    ? '只有管理员可以导入 CC Switch 配置'
+                    : (importBlockedReason ?? undefined)
                 }
               >
                 <Icon
@@ -249,10 +246,10 @@ export function TopBar({
                 />
                 {importing ? '正在导入…' : '从 CC Switch 导入'}
                 <span className="menu-hint">
-                  {bridgeAvailable ? '本机数据' : '仅服务器'}
+                  {!canManage ? '仅管理员' : importBlockedReason ? '仅服务器' : '本机数据'}
                 </span>
               </button>
-              {storageMode === 'server' && (
+              {storageMode === 'server' && canManage && (
                 <button
                   type="button"
                   className="menu-item"

@@ -1,22 +1,17 @@
 import { hostname, networkInterfaces, platform } from 'node:os'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
-import { remoteSyncAllowed } from './remote-access'
 
 /**
  * 运行环境自述。
  *
  * 浏览器永远不知道「我是不是跑服务的这台机器」：页面里的每个请求都是发给服务
- * 端进程的，由它去读 CC Switch、拉起 headless Chrome。所以同一份页面在服务器
- * 上和在手机上打开，行为并不一样：
+ * 端进程的。这个接口按连接的来源地址判断，回环就是本机，其他就是客户端。
  *
- * - 本机（回环地址）：/api/cc-switch/* 全部可用，同步真正执行。
- * - 客户端（局域网其他设备）：这几个接口按设计只允许回环，返回 403。同步点
- *   下去必然失败，前端应该提前说明而不是让用户等一轮超时。
- * - 静态部署（只有 dist）：/api/* 根本不存在，同样无法同步。
- *
- * 这个接口把「谁在处理请求、能不能同步」告诉前端，前端据此决定按钮状态，并在
- * 提示里写清楚额度是哪台机器读到的。
+ * 用途：
+ * - 客户端不能导入 CC Switch（响应里带 API Key）、不能拉起本机登录窗口，
+ *   界面据此把这两个入口说明清楚；额度同步则是任何设备都能触发的，服务端代劳。
+ * - 纯静态部署时接口不存在，前端也知道自己只剩 localStorage。
  */
 
 const RUNTIME_ROUTE = '/api/runtime'
@@ -29,8 +24,6 @@ export interface RuntimeInfo {
   /** 服务端自己的局域网地址，客户端用它来确认连的是哪台机器 */
   addresses: string[]
   mode: 'dev' | 'preview'
-  /** 是否允许客户端触发同步（AIHUB_ALLOW_REMOTE_SYNC=1） */
-  syncFromClient: boolean
   serverTime: string
 }
 
@@ -86,7 +79,6 @@ function runtimeMiddleware(mode: 'dev' | 'preview') {
       platform: platform(),
       addresses: lanAddresses(),
       mode,
-      syncFromClient: remoteSyncAllowed(),
       serverTime: new Date().toISOString(),
     }
     sendJson(response, info)

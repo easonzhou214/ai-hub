@@ -40,7 +40,7 @@ import { useHubState } from './hubState'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
 import { UsagePage } from './pages/Usage'
-import { bridgeReachable, syncRunnerPhrase, useRuntimeInfo } from './runtime'
+import { canUseLocalTools, syncRunnerPhrase, useRuntimeInfo } from './runtime'
 import { reportSyncFailure } from './syncLog'
 import type {
   PageKey,
@@ -50,6 +50,7 @@ import type {
   ProviderType,
 } from './types'
 import {
+  createId,
   isInterfaceSynced,
   loginBrand,
   providerAlerts,
@@ -100,6 +101,9 @@ async function syncImportedProviders(providers: Provider[]) {
 export default function App() {
   const [user, setUser] = useState<Account | null>(() => loadSession())
   const [accounts, setAccounts] = useState<Account[]>(() => getAccounts())
+  // 权限：供应商配置的增删改、导入、网页登录只给管理员；普通账号只读，
+  // 但仍可以手动触发同步（同步本身由服务端代劳）。
+  const canManage = user?.role === 'admin'
 
   // 供应商、额度、账号由服务端统一保存（静态部署时退回 localStorage）。
   const {
@@ -227,12 +231,16 @@ export default function App() {
   )
 
   const handlePushLocal = useCallback(async () => {
+    if (!canManage) {
+      notify('只有管理员可以覆盖服务端配置', 'error')
+      return
+    }
     const ok = await pushLocal()
     notify(
       ok ? '已用本机配置覆盖服务端' : '推送失败：当前没有连接服务端',
       ok ? 'success' : 'error',
     )
-  }, [notify, pushLocal])
+  }, [canManage, notify, pushLocal])
 
   const navigate = useCallback((next: PageKey) => {
     setPage(next)
@@ -380,43 +388,42 @@ export default function App() {
     [providers],
   )
 
-  // CC Switch 接口默认只接受回环请求。在别的设备上打开页面时，同步 / 导入 /
-  // 网页登录都必然 403：提前置灰并说清原因，比让用户等一轮超时看到红字好。
-  const bridgeBlocked = runtimeChecked && !bridgeReachable(runtime)
-  const bridgeBlockedReason = !runtime
-    ? '这个地址没有本地服务（纯静态部署），读不到 CC Switch 和登录态'
-    : `同步由运行服务的机器执行：请在 ${runtime.hostname} 上打开页面，或用 AIHUB_ALLOW_REMOTE_SYNC=1 重启服务`
-  const bridgeTargetCount = providers.filter(
-    (provider) =>
-      provider.enabled &&
-      isInterfaceSynced(provider) &&
-      provider.syncMode !== 'pixellab',
-  ).length
-  const pixellabTargetCount = providers.filter(
-    (provider) => provider.enabled && provider.syncMode === 'pixellab',
-  ).length
-  // 有 CC Switch 供应商、又没有能直连的 PixelLab 时，同步按钮直接不可用。
-  const syncBlockedReason =
-    bridgeBlocked && bridgeTargetCount > 0 && pixellabTargetCount === 0
-      ? bridgeBlockedReason
-      : null
+  // 导入 CC Switch / 网页登录要碰本机（读配置、拉起 Chrome 窗口），客户端做完
+  // 这些也看不到窗口，所以只在服务端那台机器开放；额度同步不受影响。
+  const localToolsReady = canUseLocalTools(runtime, runtimeChecked)
+  const localToolsReason = !runtimeChecked
+    ? '正在确认运行环境，请稍后再试'
+    : !runtime
+      ? '这个地址没有本地服务（纯静态部署），读不到 CC Switch'
+      : `CC Switch 配置与登录窗口在运行服务的机器上，请到 ${runtime.hostname} 上操作`
 
   const openAdd = useCallback(
     (type?: ProviderType, preset?: ProviderPreset) => {
+      if (!canManage) {
+        notify('只有管理员可以添加供应商', 'error')
+        return
+      }
       setEditingId(null)
       setInitialType(type ?? (preset === 'pixellab' ? 'image' : 'coding'))
       setDrawerPreset(preset ?? null)
       setDrawerOpen(true)
     },
-    [],
+    [canManage, notify],
   )
 
-  const openEdit = useCallback((provider: Provider) => {
-    setEditingId(provider.id)
-    setInitialType(provider.type)
-    setDrawerPreset(null)
-    setDrawerOpen(true)
-  }, [])
+  const openEdit = useCallback(
+    (provider: Provider) => {
+      if (!canManage) {
+        notify('只有管理员可以修改供应商配置', 'error')
+        return
+      }
+      setEditingId(provider.id)
+      setInitialType(provider.type)
+      setDrawerPreset(null)
+      setDrawerOpen(true)
+    },
+    [canManage, notify],
+  )
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false)
@@ -439,11 +446,15 @@ export default function App() {
 
   const handleSave = useCallback(
     (draft: ProviderDraft) => {
+      if (!canManage) {
+        notify('只有管理员可以修改供应商配置', 'error')
+        return
+      }
       const isEdit = providers.some((provider) => provider.id === draft.id)
       const now = new Date().toISOString()
       const nextProvider: Provider = {
         ...draft,
-        id: draft.id ?? crypto.randomUUID(),
+        id: draft.id ?? createId(),
         createdAt: draft.createdAt ?? now,
         updatedAt: draft.updatedAt ?? now,
       }
@@ -458,9 +469,11 @@ export default function App() {
       setEditingId(null)
       notify(isEdit ? '已保存供应商配置' : '已添加供应商')
 
-      // PixelLab 没有 CC Switch 缓存，保存后立刻拉一次额度，避免用户还要等
-      // 自动同步（5 分钟）或手动点同步。
-      if (nextProvider.syncMode === 'pixellab' && nextProvider.enabled) {
+      // 保存后立刻读一次额度，别让用户等 5 分钟的自动同步：
+      // - PixelLab 是浏览器直连，任何设备都能读；
+      // - CC Switch 供应商由服务端代劳（客户端加的也一样），读完写回共享状态，
+      //   其他设备下一次轮询就能看到。
+      if (nextProvider.enabled && isInterfaceSynced(nextProvider)) {
         void (async () => {
           const startedAt = Date.now()
           try {
@@ -472,8 +485,13 @@ export default function App() {
                   : provider,
               ),
             )
-            setLastSyncedAt(snapshot.syncedAt)
-            notify(`已读取 ${nextProvider.name} 的 PixelLab 额度`)
+            if (!snapshot.loginRequired) setLastSyncedAt(snapshot.syncedAt)
+            notify(
+              snapshot.loginRequired
+                ? `${nextProvider.name} 需要登录后才能读取额度`
+                : `${syncRunnerPhrase(runtime)}读取 ${nextProvider.name} 的额度`,
+              snapshot.loginRequired ? 'error' : 'success',
+            )
           } catch (error) {
             const message = readableSyncError(error)
             reportSyncFailure(nextProvider, error, Date.now() - startedAt)
@@ -489,11 +507,15 @@ export default function App() {
         })()
       }
     },
-    [notify, providers, setLastSyncedAt, setProviders],
+    [canManage, notify, providers, runtime, setLastSyncedAt, setProviders],
   )
 
   const handleToggle = useCallback(
     (provider: Provider) => {
+      if (!canManage) {
+        notify('只有管理员可以启用或停用供应商', 'error')
+        return
+      }
       const nextEnabled = !provider.enabled
       setProviders((current) =>
         current.map((item) =>
@@ -504,11 +526,15 @@ export default function App() {
       )
       notify(`${nextEnabled ? '已启用' : '已停用'} ${provider.name}`)
     },
-    [notify, setProviders],
+    [canManage, notify, setProviders],
   )
 
   const handleDelete = useCallback(
     (provider: Provider) => {
+      if (!canManage) {
+        notify('只有管理员可以删除供应商', 'error')
+        return
+      }
       setConfirm({
         title: `删除 ${provider.name}？`,
         description:
@@ -527,7 +553,7 @@ export default function App() {
         },
       })
     },
-    [editingId, notify, setProviders],
+    [canManage, editingId, notify, setProviders],
   )
 
   const handleExport = useCallback(() => {
@@ -556,6 +582,14 @@ export default function App() {
 
   const handleImport = useCallback(async () => {
     if (importing) return
+    if (!canManage) {
+      notify('只有管理员可以导入供应商配置', 'error')
+      return
+    }
+    if (!localToolsReady) {
+      notify(localToolsReason, 'error')
+      return
+    }
     setImporting(true)
     try {
       const configs = await fetchCcSwitchProviders()
@@ -592,7 +626,16 @@ export default function App() {
     } finally {
       setImporting(false)
     }
-  }, [importing, notify, providers, setLastSyncedAt, setProviders])
+  }, [
+    canManage,
+    importing,
+    localToolsReady,
+    localToolsReason,
+    notify,
+    providers,
+    setLastSyncedAt,
+    setProviders,
+  ])
 
   const runSync = useCallback(
     async (silent: boolean) => {
@@ -605,17 +648,12 @@ export default function App() {
         if (!silent) notify('网络已断开，恢复网络后会自动重试', 'error')
         return
       }
-      if (syncBlockedReason) {
-        if (!silent) notify(syncBlockedReason, 'error')
-        return
-      }
 
       syncingRef.current = true
       lastAttemptRef.current = Date.now()
       setSyncing(true)
       try {
         let realSynced = 0
-        let bridgeSkipped = 0
         const needLogin: string[] = []
         const failures: Array<{ name: string; message: string }> = []
         const now = new Date().toISOString()
@@ -628,11 +666,6 @@ export default function App() {
           providers.map(async (provider) => {
             if (!provider.enabled) return provider
             if (!isInterfaceSynced(provider)) return provider
-            // 客户端访问时 CC Switch 接口会 403，跳过而不是记一条失败。
-            if (provider.syncMode !== 'pixellab' && bridgeBlocked) {
-              bridgeSkipped += 1
-              return provider
-            }
             const startedAt = Date.now()
             try {
               const snapshot = await fetchProviderBilling(provider)
@@ -672,10 +705,6 @@ export default function App() {
         void refreshCodexCurrent()
 
         if (!silent) {
-          const skippedNote =
-            bridgeSkipped > 0
-              ? `（${bridgeSkipped} 个 CC Switch 供应商需在运行服务的机器上同步）`
-              : ''
           if (failures.length > 0) {
             const first = failures[0]
             const extra =
@@ -699,11 +728,8 @@ export default function App() {
             )
           } else if (realSynced > 0) {
             notify(
-              `${syncRunnerPhrase(runtime)}同步 ${realSynced} 个供应商的最新额度${skippedNote}`,
-              skippedNote ? 'info' : 'success',
+              `${syncRunnerPhrase(runtime)}同步 ${realSynced} 个供应商的最新额度`,
             )
-          } else if (bridgeSkipped > 0) {
-            notify(bridgeBlockedReason, 'error')
           } else {
             notify('没有可自动同步的接口供应商，手动录入的额度不受影响', 'info')
           }
@@ -714,15 +740,12 @@ export default function App() {
       }
     },
     [
-      bridgeBlocked,
-      bridgeBlockedReason,
       notify,
       providers,
       refreshCodexCurrent,
       runtime,
       setLastSyncedAt,
       setProviders,
-      syncBlockedReason,
     ],
   )
 
@@ -826,9 +849,13 @@ export default function App() {
         notify('该供应商不支持网页登录额度')
         return
       }
-      // 网页登录要在这台机器上拉起 headless Chrome，客户端调不通。
-      if (bridgeBlocked) {
-        notify(bridgeBlockedReason, 'error')
+      if (!canManage) {
+        notify('只有管理员可以发起网页登录', 'error')
+        return
+      }
+      // 登录窗口只会在运行服务的那台机器上弹出，客户端点了也看不见。
+      if (!localToolsReady) {
+        notify(localToolsReason, 'error')
         return
       }
       if (
@@ -889,7 +916,7 @@ export default function App() {
         )
       }
     },
-    [handleRefresh, login, notify],
+    [canManage, handleRefresh, localToolsReady, localToolsReason, login, notify],
   )
 
   const handleLoginRetry = useCallback(() => {
@@ -1006,8 +1033,10 @@ export default function App() {
         storageMode={storageMode}
         syncRunner={syncRunnerPhrase(runtime)}
         isRemoteClient={runtime?.role === 'client'}
-        syncBlockedReason={syncBlockedReason}
-        bridgeAvailable={!bridgeBlocked}
+        canManage={canManage}
+        importBlockedReason={
+          !localToolsReady ? localToolsReason : null
+        }
         onPushLocal={handlePushLocal}
         onRefresh={handleRefresh}
         onToggleAutoSync={() => setAutoSync((current) => !current)}
@@ -1026,11 +1055,6 @@ export default function App() {
         <Sidebar
           page={page}
           providerCount={providers.length}
-          storageLabel={
-            storageMode === 'server'
-              ? '服务端存储 · 多端共用'
-              : '本机存储 · 未连接服务端'
-          }
           onNavigate={navigate}
         />
         <main className="main" ref={mainRef}>
@@ -1038,6 +1062,7 @@ export default function App() {
             <Overview
               providers={providers}
               lastSyncedAt={lastSyncedAt}
+              canManage={canManage}
               onEdit={openEdit}
               onAdd={openAdd}
               onNavigate={navigate}
@@ -1050,10 +1075,11 @@ export default function App() {
             <ProvidersPage
               providers={providers}
               importing={importing}
+              canManage={canManage}
               onAdd={openAdd}
               onAddPreset={(preset) => openAdd('image', preset)}
               onImport={handleImport}
-              importBlockedReason={bridgeBlocked ? bridgeBlockedReason : null}
+              importBlockedReason={!localToolsReady ? localToolsReason : null}
               onEdit={openEdit}
               onToggle={handleToggle}
               onDelete={handleDelete}
@@ -1065,6 +1091,7 @@ export default function App() {
           {page === 'usage' && (
             <UsagePage
               providers={providers}
+              canManage={canManage}
               onEdit={openEdit}
               onNavigate={navigate}
               codexProviderId={codexProviderId}

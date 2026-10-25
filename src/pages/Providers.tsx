@@ -26,6 +26,8 @@ type Filter = 'all' | ProviderType
 interface ProvidersPageProps {
   providers: Provider[]
   importing: boolean
+  /** 只有管理员能增删改，普通账号只读。 */
+  canManage: boolean
   onAdd: (type?: ProviderType) => void
   onAddPreset?: (preset: ProviderPreset) => void
   onImport: () => void
@@ -51,6 +53,7 @@ function hostOf(url: string) {
 export function ProvidersPage({
   providers,
   importing,
+  canManage,
   onAdd,
   onAddPreset,
   onImport,
@@ -96,41 +99,43 @@ export function ProvidersPage({
         <div className="page-head-copy">
           <h1>供应商</h1>
         </div>
-        <div className="page-actions">
-          <button
-            type="button"
-            className="btn btn-secondary"
-            onClick={onImport}
-            disabled={importing || Boolean(importBlockedReason)}
-            title={importBlockedReason ?? undefined}
-          >
-            <Icon
-              name="refresh"
-              size={14}
-              className={importing ? 'spinning' : undefined}
-            />
-            {importing ? '导入中…' : '从 CC Switch 导入'}
-          </button>
-          {onAddPreset && (
+        {canManage && (
+          <div className="page-actions">
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={() => onAddPreset('pixellab')}
-              title="预填 PixelLab 的名称、类型与接口地址"
+              onClick={onImport}
+              disabled={importing || Boolean(importBlockedReason)}
+              title={importBlockedReason ?? undefined}
             >
-              <Icon name="sparkles" size={14} />
-              添加 PixelLab
+              <Icon
+                name="refresh"
+                size={14}
+                className={importing ? 'spinning' : undefined}
+              />
+              {importing ? '导入中…' : '从 CC Switch 导入'}
             </button>
-          )}
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={() => onAdd(addType)}
-          >
-            <Icon name="plus" size={14} />
-            添加供应商
-          </button>
-        </div>
+            {onAddPreset && (
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => onAddPreset('pixellab')}
+                title="预填 PixelLab 的名称、类型与接口地址"
+              >
+                <Icon name="sparkles" size={14} />
+                添加 PixelLab
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => onAdd(addType)}
+            >
+              <Icon name="plus" size={14} />
+              添加供应商
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="list-toolbar">
@@ -175,14 +180,16 @@ export function ProvidersPage({
             title="还没有供应商"
             description="添加你的第一个编程或绘图供应商，开始统一跟踪额度。"
             action={
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => onAdd(addType)}
-              >
-                <Icon name="plus" size={14} />
-                添加供应商
-              </button>
+              canManage ? (
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => onAdd(addType)}
+                >
+                  <Icon name="plus" size={14} />
+                  添加供应商
+                </button>
+              ) : null
             }
           />
         ) : filtered.length === 0 && !query && filter !== 'all' ? (
@@ -195,7 +202,7 @@ export function ProvidersPage({
                 : '添加一个编程供应商，开始跟踪额度与重置时间。'
             }
             action={
-              filter === 'image' && onAddPreset ? (
+              !canManage ? null : filter === 'image' && onAddPreset ? (
                 <div className="empty-actions">
                   <button
                     type="button"
@@ -478,7 +485,7 @@ export function ProvidersPage({
                                       ? `接口同步${lastSync ? ` · ${lastSync}` : ''}`
                                       : '额度运行正常')}
                     </span>
-                    {needsLogin && (
+                    {needsLogin && canManage && (
                       <button
                         type="button"
                         className="text-button pt-login-link"
@@ -497,26 +504,31 @@ export function ProvidersPage({
                     <Switch
                       checked={provider.enabled}
                       onChange={() => onToggle(provider)}
+                      disabled={!canManage}
                       label={`${provider.enabled ? '停用' : '启用'} ${provider.name}`}
                     />
-                    <button
-                      type="button"
-                      className="icon-button"
-                      aria-label={`编辑 ${provider.name}`}
-                      title="编辑供应商"
-                      onClick={() => onEdit(provider)}
-                    >
-                      <Icon name="edit" size={15} />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-button danger-hover"
-                      aria-label={`删除 ${provider.name}`}
-                      title="删除供应商"
-                      onClick={() => onDelete(provider)}
-                    >
-                      <Icon name="trash" size={15} />
-                    </button>
+                    {canManage && (
+                      <>
+                        <button
+                          type="button"
+                          className="icon-button"
+                          aria-label={`编辑 ${provider.name}`}
+                          title="编辑供应商"
+                          onClick={() => onEdit(provider)}
+                        >
+                          <Icon name="edit" size={15} />
+                        </button>
+                        <button
+                          type="button"
+                          className="icon-button danger-hover"
+                          aria-label={`删除 ${provider.name}`}
+                          title="删除供应商"
+                          onClick={() => onDelete(provider)}
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               )

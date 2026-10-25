@@ -6,8 +6,9 @@ import { useEffect, useState } from 'react'
  * 浏览器拿不到这个信息，只能问服务端：它看连接的来源地址，回环就是本机，其他
  * 就是别的设备。纯静态部署时接口不存在，返回 null。
  *
- * 为什么要区分：`/api/cc-switch/*` 默认只接受回环请求，客户端点同步一定 403。
- * 提前知道就能把按钮置灰并说明原因，而不是让用户等一轮超时再看到红字。
+ * 这个判断只影响两件事：
+ * - CC Switch 导入、网页登录需要读本机配置 / 拉起本机窗口，客户端做不了；
+ * - 提示文案要说清额度是哪台机器读到的（同步本身由服务端代劳，客户端也能点）。
  */
 export type RuntimeRole = 'server' | 'client'
 
@@ -17,7 +18,6 @@ export interface RuntimeInfo {
   platform: string
   addresses: string[]
   mode: 'dev' | 'preview'
-  syncFromClient: boolean
   serverTime: string
 }
 
@@ -28,8 +28,7 @@ function isRuntimeInfo(value: unknown): value is RuntimeInfo {
   const record = value as Record<string, unknown>
   return (
     (record.role === 'server' || record.role === 'client') &&
-    typeof record.hostname === 'string' &&
-    typeof record.syncFromClient === 'boolean'
+    typeof record.hostname === 'string'
   )
 }
 
@@ -89,8 +88,14 @@ export function syncRunnerPhrase(runtime: RuntimeInfo | null) {
   return `在服务器 ${runtime.hostname} 上`
 }
 
-/** CC Switch 相关动作（同步/导入/网页登录）在这台设备上是否可用。 */
-export function bridgeReachable(runtime: RuntimeInfo | null) {
-  if (!runtime) return false
-  return runtime.role === 'server' || runtime.syncFromClient
+/**
+ * CC Switch 导入、网页登录这类「必须碰到本机」的动作是否可用。
+ * 额度同步不在此列：它由服务端代劳，客户端也能触发。
+ */
+export function canUseLocalTools(
+  runtime: RuntimeInfo | null,
+  checked: boolean,
+) {
+  if (!checked) return false
+  return runtime?.role === 'server'
 }

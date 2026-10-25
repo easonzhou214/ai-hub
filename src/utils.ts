@@ -11,6 +11,35 @@ import type {
 export const FX_USD_CNY = 7.2
 
 /**
+ * 生成 id。
+ *
+ * `crypto.randomUUID()` 只在安全上下文（https / localhost）里有定义：局域网用
+ * `http://192.168.x.x` 打开时它是 undefined，直接调会抛
+ * 「crypto.randomUUID is not a function」，客户端新增供应商就卡在保存这一步。
+ * `crypto.getRandomValues()` 没有这个限制，用它手搓一个 v4 兜底。
+ */
+export function createId() {
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi && typeof cryptoApi.randomUUID === 'function') {
+    try {
+      return cryptoApi.randomUUID()
+    } catch {
+      // 少数环境会禁用它，继续走下面的兜底。
+    }
+  }
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') {
+    const bytes = cryptoApi.getRandomValues(new Uint8Array(16))
+    bytes[6] = (bytes[6] & 0x0f) | 0x40
+    bytes[8] = (bytes[8] & 0x3f) | 0x80
+    const hex = Array.from(bytes, (byte) =>
+      byte.toString(16).padStart(2, '0'),
+    ).join('')
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
+  }
+  return `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
+/**
  * 全仓共用的额度阈值。放在一处，避免「状态判定」「告警文案」「进度条配色」
  * 各自维护一份数字后又慢慢漂移。
  */

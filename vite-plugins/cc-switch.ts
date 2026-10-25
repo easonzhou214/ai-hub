@@ -18,18 +18,19 @@ import {
 } from './krill'
 import { logSyncEvent, readSyncEvents, SYNC_LOG_DIR } from './sync-log'
 import { getUsageSnapshot, saveUsageSnapshot } from './usage-cache'
-import { remoteSyncAllowed } from './remote-access'
 
 /**
- * Local-only bridge to CC Switch, Codex's active provider, and quota endpoints.
+ * 本地桥接：CC Switch、Codex 当前配置、额度接口。
  *
  * - GET  /api/cc-switch/providers  -> custom Codex providers in CC Switch
  * - POST /api/cc-switch/usage      -> token/account quota for one provider
  * - GET  /api/codex/current        -> provider currently used by the Codex app
  *
- * All endpoints are restricted to loopback requests. Provider credentials
- * never leave the machine; the browser never has to call provider admin APIs
- * directly (some of those do not expose CORS headers).
+ * 分两类：
+ * - 只在本机开放（providers / codex/current / login / logs）：会返回 API Key、
+ *   读本机 Codex 配置、拉起本机 Chrome 窗口，不能给别的设备用。
+ * - 任何设备都能调（usage / log）：响应里只有额度数字。客户端点同步时由服务端
+ *   进程去读 CC Switch 和登录态，这样加完供应商点一次同步，所有设备都能看到。
  */
 
 const PROVIDERS_PATH = '/api/cc-switch/providers'
@@ -946,11 +947,19 @@ function ccSwitchMiddleware(
     return
   }
 
-  if (!isLoopback(request) && !remoteSyncAllowed()) {
+  // 会带出 API Key、读本机配置或拉起本机窗口的接口只在本机开放；额度查询
+  // （usage）与前端日志允许别的设备调用——它们由服务端进程代劳，响应里只有
+  // 额度数字，客户端加完供应商点一次同步即可让所有设备看到。
+  const localOnly =
+    path === PROVIDERS_PATH ||
+    path === CODEX_CURRENT_PATH ||
+    path === LOGIN_START_PATH ||
+    path === LOGIN_STATUS_PATH ||
+    path === LOGS_PATH
+  if (localOnly && !isLoopback(request)) {
     sendJson(response, 403, {
-      error:
-        'AI Hub 本地接口只允许本机访问：请在这台机器上打开页面，或用 AIHUB_ALLOW_REMOTE_SYNC=1 启动服务',
-      reason: 'remote-blocked',
+      error: 'CC Switch 配置与登录窗口只存在于运行服务的那台机器上，请在本机操作',
+      reason: 'local-only',
     })
     return
   }

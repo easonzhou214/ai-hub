@@ -22,6 +22,7 @@ import {
   PROVIDER_COLORS,
   TYPE_DESCRIPTION,
   TYPE_LABEL,
+  createId,
   cx,
   cycleLabel,
   formatFullDate,
@@ -342,7 +343,7 @@ export function ProviderDrawer({
 
     const now = new Date().toISOString()
     const draft: ProviderDraft = {
-      id: provider?.id ?? crypto.randomUUID(),
+      id: provider?.id ?? createId(),
       createdAt: provider?.createdAt ?? now,
       updatedAt: now,
       name,
@@ -1129,7 +1130,9 @@ export function ProviderDrawer({
                       ? '已填写接口信息'
                       : '填写 Base URL 与 API Key'}
                   </strong>
-                  <em>仅保存在当前浏览器，不会上传到服务器</em>
+                  <em>
+                    随配置同步到服务端状态文件（明文，权限 0600），不填也能保存
+                  </em>
                 </span>
                 <span className="advanced-side">
                   {form.apiKey && (
@@ -1171,7 +1174,7 @@ export function ProviderDrawer({
                     htmlFor={`${uid}-key`}
                     className="full"
                     fieldKey="apiKey"
-                    hint="仅保存在此浏览器 localStorage，不会上传"
+                    hint="随配置写入服务端状态文件（明文），导出时会剔除"
                   >
                     <div className="input-with-action">
                       <span className="input-leading">
@@ -1244,7 +1247,7 @@ export function ProviderDrawer({
           <footer className="sheet-foot">
             <span className="sheet-foot-hint">
               <Icon name="lock" size={12} />
-              配置仅保存在本地
+              保存后写入服务端，其他设备可见
             </span>
             <div className="sheet-foot-actions">
               <button type="button" className="btn btn-ghost" onClick={onClose}>

@@ -103,10 +103,12 @@ export function Switch({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean
   onChange: () => void
   label: string
+  disabled?: boolean
 }) {
   return (
     <button
@@ -116,6 +118,7 @@ export function Switch({
       aria-label={label}
       className="switch"
       onClick={onChange}
+      disabled={disabled}
     >
       <span className="switch-thumb" />
     </button>

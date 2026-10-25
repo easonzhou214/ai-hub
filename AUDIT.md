@@ -333,10 +333,16 @@ src/
 
 1. **「上次同步」在失败时也被写成当前时间**。`runSync` 无条件 `setLastSyncedAt(now)`，HUD 常驻显示「上次同步 刚刚」，toast 又只活 2.8 秒，所以看到的是「成功」而数据没动。现在只有 `realSynced > 0` 才写；失败只更新卡片上的 `syncError`。自动同步的重试因此改用内存里的 `lastAttemptRef` + 60s 冷却节流。
 2. **`200 + loginRequired` 被算成同步成功**。网页登录态过期时接口仍返回 200，`fetchProviderBilling` 正常 resolve，`realSynced` 就 +1。现在这类结果单列成 `needLogin`，提示改成「X 的登录态已过期」，不再混进成功数；导入流程 `syncImportedProviders` 同理。
-3. **客户端根本调不到接口，界面却没提示**。`/api/cc-switch/*` 在 `cc-switch.ts` 里用 `isLoopback(request)` 做了限制，非本机一律 403（`/api/state` 不受限，所以列表能显示、只有同步失败）。现在：
-
-   - 新增 `vite-plugins/runtime.ts` → `GET /api/runtime`，按连接来源判断 `role: server | client`，带上主机名、局域网地址、`syncFromClient`；
-   - 前端 `src/runtime.ts` + `useRuntimeInfo()`，据此置灰「同步额度」「从 CC Switch 导入」「网页登录」，并在 title/账号菜单里写明「在本机执行」还是「在服务器 xxx 上执行」；
-   - 需要放开的场景（局域网自用）用 `AIHUB_ALLOW_REMOTE_SYNC=1` 启动，`vite-plugins/remote-access.ts` 统一读这个开关，`/api/runtime` 的 `syncFromClient` 会同步变化。
+3. **客户端直接打额度接口会被 403**。`/api/cc-switch/*` 在 `cc-switch.ts` 里用 `isLoopback(request)` 做了整组限制，非本机一律 403（`/api/state` 不受限，所以列表能显示、只有同步失败）。现在按「响应里有没有秘密」拆开：
+   - `usage`（只返回额度数字）与前端日志对局域网开放：客户端点同步，服务端进程去读那台机器上的 CC Switch 与登录态，结果写回共享状态，所有设备都能看到；
+   - `providers`（带 API Key）、`codex/current`（读本机配置）、`login/*`（拉本机 Chrome）、`logs` 仍然只接受回环请求，客户端会拿到 403 + 可执行说明；
+   - 新增 `vite-plugins/runtime.ts` → `GET /api/runtime`，按来源地址判断 `role: server | client`，前端据此只把「导入 CC Switch / 网页登录」标成仅本机，同步按钮不再置灰。
 
 顺带修掉两处会误导人的文案：侧边栏写死的「本地优先 · 仅存本机」改成按 `storageMode` 显示「服务端存储 · 多端共用 / 本机存储 · 未连接服务端」；账号浮层写死的 `AI Hub v0.2` 改成 `__APP_VERSION__`（来自 `package.json`）。`fetchCcSwitchProviders` 现在把服务端返回的 `error` 原样透出，不再是笼统的「无法读取 CC Switch 配置」。
+
+## 十、权限与「客户端加完供应商要通知服务器刷新」
+
+- 角色：`canManage = user.role === 'admin'`。管理员可增删改供应商、导入 CC Switch、网页登录、管理账号；普通账号只读（新增/编辑/删除/导入/登录入口都不渲染），但仍可手动同步。
+- 服务端只做能力区分，不做鉴权（和账号体系一致，口令在前端）：`/api/runtime` 只回答「你在不在本机」，不判断你是谁的账号。
+- 新增供应商后立即读一次额度：`handleSave` 不再只处理 PixelLab，任何 `isInterfaceSynced` 的供应商都会同步。客户端加的 CC Switch 供应商由服务端代劳，结果写进共享状态，其他设备 15 秒轮询即可看到——这就是「通知服务器刷新」。
+- 自动同步的记账修正后，失败不会再把 `lastSyncedAt` 改新，所以重试节流单独用 `lastAttemptRef` + 60s 冷却，避免切回标签页就重跑一轮注定失败的请求。

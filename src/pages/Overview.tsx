@@ -22,6 +22,8 @@ const TYPE_ORDER: ProviderType[] = ['coding', 'image']
 interface OverviewProps {
   providers: Provider[]
   lastSyncedAt: string
+  /** 只有管理员能增删改，普通账号只读。 */
+  canManage: boolean
   onEdit: (provider: Provider) => void
   onAdd: (type?: ProviderType) => void
   onNavigate: (page: PageKey) => void
@@ -45,6 +47,7 @@ const STATUS_ORDER: Record<string, number> = {
 export function Overview({
   providers,
   lastSyncedAt,
+  canManage,
   onEdit,
   onAdd,
   onNavigate,
@@ -167,10 +170,12 @@ export function Overview({
             <Icon name="chart" size={14} />
             额度明细
           </button>
-          <button type="button" className="btn btn-primary" onClick={() => onAdd()}>
-            <Icon name="plus" size={14} />
-            添加供应商
-          </button>
+          {canManage && (
+            <button type="button" className="btn btn-primary" onClick={() => onAdd()}>
+              <Icon name="plus" size={14} />
+              添加供应商
+            </button>
+          )}
         </div>
       </div>
 
@@ -266,16 +271,18 @@ export function Overview({
                   : '切换到其他分类，或添加一个该类型的供应商。'
               }
               action={
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() =>
-                    onAdd(filter === 'all' ? undefined : filter)
-                  }
-                >
-                  <Icon name="plus" size={14} />
-                  添加供应商
-                </button>
+                canManage ? (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() =>
+                      onAdd(filter === 'all' ? undefined : filter)
+                    }
+                  >
+                    <Icon name="plus" size={14} />
+                    添加供应商
+                  </button>
+                ) : null
               }
             />
           </div>
@@ -305,6 +312,7 @@ export function Overview({
                     <ProviderCard
                       key={provider.id}
                       provider={provider}
+                      canManage={canManage}
                       onEdit={onEdit}
                       onLogin={onLogin}
                       loginBusy={loginBusyId === provider.sourceId}

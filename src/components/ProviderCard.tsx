@@ -19,12 +19,15 @@ import {
 
 export function ProviderCard({
   provider,
+  canManage = true,
   onEdit,
   onLogin,
   loginBusy = false,
   codexActive = false,
 }: {
   provider: Provider
+  /** 普通账号只读：隐藏「管理」入口。 */
+  canManage?: boolean
   onEdit: (provider: Provider) => void
   onLogin?: (provider: Provider) => void
   loginBusy?: boolean
@@ -229,7 +232,8 @@ export function ProviderCard({
             type="button"
             className="btn btn-soft btn-sm"
             onClick={() => onLogin?.(provider)}
-            disabled={loginBusy || !onLogin}
+            disabled={loginBusy || !onLogin || !canManage}
+            title={!canManage ? '只有管理员可以发起网页登录' : undefined}
           >
             <Icon name="key" size={12} />
             {loginBusy ? '登录中…' : `登录 ${loginLabel}`}
@@ -279,15 +283,17 @@ export function ProviderCard({
             )}
           </>
         )}
-        <button
-          type="button"
-          className="text-button pc-manage"
-          onClick={() => onEdit(provider)}
-          aria-label={`管理 ${provider.name}`}
-        >
-          管理
-          <Icon name="arrow-up-right" size={12} />
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            className="text-button pc-manage"
+            onClick={() => onEdit(provider)}
+            aria-label={`管理 ${provider.name}`}
+          >
+            管理
+            <Icon name="arrow-up-right" size={12} />
+          </button>
+        )}
       </div>
     </article>
   )

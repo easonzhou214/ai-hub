@@ -262,7 +262,7 @@ export function AccountManager({
 
               <div className="accounts-add-foot">
                 <span className="field-hint">
-                  普通账号只能查看与同步供应商，不能管理其他账号。
+                  普通账号只能查看与手动同步额度，不能修改供应商配置。
                 </span>
                 <button
                   type="submit"
