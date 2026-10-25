@@ -40,6 +40,7 @@ import { useHubState } from './hubState'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
 import { UsagePage } from './pages/Usage'
+import { bridgeReachable, syncRunnerPhrase, useRuntimeInfo } from './runtime'
 import { reportSyncFailure } from './syncLog'
 import type {
   PageKey,
@@ -55,6 +56,8 @@ import {
 } from './utils'
 
 const AUTO_SYNC_INTERVAL_MS = 5 * 60_000
+/** 自动同步的最短重试间隔（失败后不写时间戳，靠它节流）。 */
+const AUTO_SYNC_COOLDOWN_MS = 60_000
 const PAGE_KEYS: PageKey[] = ['overview', 'providers', 'usage']
 
 function parsePageFromHash(): PageKey {
@@ -83,7 +86,8 @@ async function syncImportedProviders(providers: Provider[]) {
     providers.map(async (provider) => {
       try {
         const snapshot = await fetchProviderBilling(provider)
-        syncedCount += 1
+        // 登录态过期时接口仍返回 200，但没读到任何额度，不能算同步成功。
+        if (!snapshot.loginRequired) syncedCount += 1
         return applyBillingSnapshot(provider, snapshot)
       } catch (error) {
         return applySyncFailure(provider, error)
@@ -138,13 +142,21 @@ export default function App() {
   const [toast, setToast] = useState<{
     id: number
     message: string
-    tone: 'success' | 'error'
+    tone: 'success' | 'error' | 'info'
   } | null>(null)
   const mainRef = useRef<HTMLElement>(null)
   const syncingRef = useRef(false)
+  // 自动同步的节流用：失败不会更新 lastSyncedAt（顶栏的「上次同步」不能撒谎），
+  // 所以要单独记住最后一次尝试的时间，避免每次切回标签页都重跑一轮。
+  const lastAttemptRef = useRef(0)
+
+  const { runtime, checked: runtimeChecked } = useRuntimeInfo()
 
   const notify = useCallback(
-    (message: string, tone: 'success' | 'error' = 'success') => {
+    (
+      message: string,
+      tone: 'success' | 'error' | 'info' = 'success',
+    ) => {
       setToast({ id: Date.now(), message, tone })
     },
     [],
@@ -339,11 +351,14 @@ export default function App() {
           )
           return additions.length ? [...additions, ...current] : current
         })
-        setLastSyncedAt(new Date().toISOString())
+        if (result.syncedCount > 0) {
+          setLastSyncedAt(new Date().toISOString())
+        }
         notify(
           result.syncedCount > 0
             ? `已从 CC Switch 同步 ${result.providers.length} 个新供应商`
             : `已导入 ${result.providers.length} 个新供应商，额度待补录`,
+          result.syncedCount > 0 ? 'success' : 'info',
         )
       } catch {
         // Silent: the explicit import button reports actionable errors.
@@ -364,6 +379,27 @@ export default function App() {
         .sort((a, b) => (a.tone === b.tone ? 0 : a.tone === 'expire' ? -1 : 1)),
     [providers],
   )
+
+  // CC Switch 接口默认只接受回环请求。在别的设备上打开页面时，同步 / 导入 /
+  // 网页登录都必然 403：提前置灰并说清原因，比让用户等一轮超时看到红字好。
+  const bridgeBlocked = runtimeChecked && !bridgeReachable(runtime)
+  const bridgeBlockedReason = !runtime
+    ? '这个地址没有本地服务（纯静态部署），读不到 CC Switch 和登录态'
+    : `同步由运行服务的机器执行：请在 ${runtime.hostname} 上打开页面，或用 AIHUB_ALLOW_REMOTE_SYNC=1 重启服务`
+  const bridgeTargetCount = providers.filter(
+    (provider) =>
+      provider.enabled &&
+      isInterfaceSynced(provider) &&
+      provider.syncMode !== 'pixellab',
+  ).length
+  const pixellabTargetCount = providers.filter(
+    (provider) => provider.enabled && provider.syncMode === 'pixellab',
+  ).length
+  // 有 CC Switch 供应商、又没有能直连的 PixelLab 时，同步按钮直接不可用。
+  const syncBlockedReason =
+    bridgeBlocked && bridgeTargetCount > 0 && pixellabTargetCount === 0
+      ? bridgeBlockedReason
+      : null
 
   const openAdd = useCallback(
     (type?: ProviderType, preset?: ProviderPreset) => {
@@ -543,11 +579,13 @@ export default function App() {
         ...result.providers,
         ...current.filter((provider) => provider.source !== 'cc-switch'),
       ])
-      setLastSyncedAt(new Date().toISOString())
+      // 导入只保证「配置对齐」，额度可能一个都没读到，别把时间戳改新。
+      if (result.syncedCount > 0) setLastSyncedAt(new Date().toISOString())
       notify(
         result.syncedCount > 0
           ? `已从 CC Switch 导入 ${result.providers.length} 个供应商并同步额度`
-          : `已导入 ${result.providers.length} 个供应商，额度同步失败`,
+          : `已导入 ${result.providers.length} 个供应商，但额度没读到，卡片里会显示原因`,
+        result.syncedCount > 0 ? 'success' : 'error',
       )
     } catch (error) {
       notify(readableSyncError(error), 'error')
@@ -560,17 +598,25 @@ export default function App() {
     async (silent: boolean) => {
       if (syncingRef.current) return
       if (!providers.some((provider) => provider.enabled)) {
-        if (!silent) notify('没有启用的供应商可同步')
+        if (!silent) notify('没有启用的供应商可同步', 'info')
         return
       }
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         if (!silent) notify('网络已断开，恢复网络后会自动重试', 'error')
         return
       }
+      if (syncBlockedReason) {
+        if (!silent) notify(syncBlockedReason, 'error')
+        return
+      }
+
       syncingRef.current = true
+      lastAttemptRef.current = Date.now()
       setSyncing(true)
       try {
         let realSynced = 0
+        let bridgeSkipped = 0
+        const needLogin: string[] = []
         const failures: Array<{ name: string; message: string }> = []
         const now = new Date().toISOString()
         // 记下开始时的版本号：只有同步期间没被用户改过的供应商才允许覆盖，
@@ -582,10 +628,21 @@ export default function App() {
           providers.map(async (provider) => {
             if (!provider.enabled) return provider
             if (!isInterfaceSynced(provider)) return provider
+            // 客户端访问时 CC Switch 接口会 403，跳过而不是记一条失败。
+            if (provider.syncMode !== 'pixellab' && bridgeBlocked) {
+              bridgeSkipped += 1
+              return provider
+            }
             const startedAt = Date.now()
             try {
               const snapshot = await fetchProviderBilling(provider)
-              realSynced += 1
+              // 200 但 loginRequired 只说明登录态过期，不是「同步成功」。
+              // 早先把这种情况算进成功数，才会出现提示成功、数字没动。
+              if (snapshot.loginRequired) {
+                needLogin.push(provider.name)
+              } else {
+                realSynced += 1
+              }
               return applyBillingSnapshot(provider, snapshot)
             } catch (error) {
               const message = readableSyncError(error)
@@ -609,9 +666,16 @@ export default function App() {
             return next
           }),
         )
-        setLastSyncedAt(now)
+        // 只有真读到额度才更新时间戳：全部失败时顶栏还显示「上次同步 刚刚」，
+        // 正是「提示成功、其实没同步」的来源。
+        if (realSynced > 0) setLastSyncedAt(now)
         void refreshCodexCurrent()
+
         if (!silent) {
+          const skippedNote =
+            bridgeSkipped > 0
+              ? `（${bridgeSkipped} 个 CC Switch 供应商需在运行服务的机器上同步）`
+              : ''
           if (failures.length > 0) {
             const first = failures[0]
             const extra =
@@ -624,10 +688,24 @@ export default function App() {
               `已同步 ${realSynced} 个，${first.name}${extra}失败：${reason}`,
               'error',
             )
+          } else if (needLogin.length > 0) {
+            const where =
+              runtime?.role === 'client'
+                ? `在服务器 ${runtime.hostname} 上`
+                : ''
+            notify(
+              `${needLogin.join('、')} 的登录态已过期，请${where}重新登录后再同步`,
+              'error',
+            )
           } else if (realSynced > 0) {
-            notify(`已同步 ${realSynced} 个接口供应商的最新额度`)
+            notify(
+              `${syncRunnerPhrase(runtime)}同步 ${realSynced} 个供应商的最新额度${skippedNote}`,
+              skippedNote ? 'info' : 'success',
+            )
+          } else if (bridgeSkipped > 0) {
+            notify(bridgeBlockedReason, 'error')
           } else {
-            notify('没有可自动同步的接口供应商，手动录入的额度不受影响')
+            notify('没有可自动同步的接口供应商，手动录入的额度不受影响', 'info')
           }
         }
       } finally {
@@ -635,7 +713,17 @@ export default function App() {
         setSyncing(false)
       }
     },
-    [notify, providers, refreshCodexCurrent, setLastSyncedAt, setProviders],
+    [
+      bridgeBlocked,
+      bridgeBlockedReason,
+      notify,
+      providers,
+      refreshCodexCurrent,
+      runtime,
+      setLastSyncedAt,
+      setProviders,
+      syncBlockedReason,
+    ],
   )
 
   const handleRefresh = useCallback(() => {
@@ -668,11 +756,19 @@ export default function App() {
       const last = new Date(lastSyncedAtRef.current).getTime()
       return Number.isNaN(last) || Date.now() - last >= AUTO_SYNC_INTERVAL_MS
     }
-    const needsSync = () =>
-      isStale() ||
-      providersRef.current.some(
-        (provider) => provider.enabled && provider.syncError,
+    const needsSync = () => {
+      // 失败不再写 lastSyncedAt（顶栏不能显示假的「上次同步」），所以这里用
+      // 「最后一次尝试」兜底，避免每次切回标签页都重跑一轮注定失败的同步。
+      if (Date.now() - lastAttemptRef.current < AUTO_SYNC_COOLDOWN_MS) {
+        return false
+      }
+      return (
+        isStale() ||
+        providersRef.current.some(
+          (provider) => provider.enabled && provider.syncError,
+        )
       )
+    }
 
     let wakeTimer = 0
     let initialTimer = 0
@@ -728,6 +824,11 @@ export default function App() {
     async (provider: Provider) => {
       if (!provider.sourceId || !provider.loginProvider) {
         notify('该供应商不支持网页登录额度')
+        return
+      }
+      // 网页登录要在这台机器上拉起 headless Chrome，客户端调不通。
+      if (bridgeBlocked) {
+        notify(bridgeBlockedReason, 'error')
         return
       }
       if (
@@ -903,6 +1004,10 @@ export default function App() {
         alerts={alerts}
         user={user}
         storageMode={storageMode}
+        syncRunner={syncRunnerPhrase(runtime)}
+        isRemoteClient={runtime?.role === 'client'}
+        syncBlockedReason={syncBlockedReason}
+        bridgeAvailable={!bridgeBlocked}
         onPushLocal={handlePushLocal}
         onRefresh={handleRefresh}
         onToggleAutoSync={() => setAutoSync((current) => !current)}
@@ -921,6 +1026,11 @@ export default function App() {
         <Sidebar
           page={page}
           providerCount={providers.length}
+          storageLabel={
+            storageMode === 'server'
+              ? '服务端存储 · 多端共用'
+              : '本机存储 · 未连接服务端'
+          }
           onNavigate={navigate}
         />
         <main className="main" ref={mainRef}>
@@ -943,6 +1053,7 @@ export default function App() {
               onAdd={openAdd}
               onAddPreset={(preset) => openAdd('image', preset)}
               onImport={handleImport}
+              importBlockedReason={bridgeBlocked ? bridgeBlockedReason : null}
               onEdit={openEdit}
               onToggle={handleToggle}
               onDelete={handleDelete}

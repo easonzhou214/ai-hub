@@ -29,6 +29,8 @@ interface ProvidersPageProps {
   onAdd: (type?: ProviderType) => void
   onAddPreset?: (preset: ProviderPreset) => void
   onImport: () => void
+  /** 这台设备读不到 CC Switch 时给出的原因，按钮据此置灰。 */
+  importBlockedReason?: string | null
   onEdit: (provider: Provider) => void
   onToggle: (provider: Provider) => void
   onDelete: (provider: Provider) => void
@@ -52,6 +54,7 @@ export function ProvidersPage({
   onAdd,
   onAddPreset,
   onImport,
+  importBlockedReason,
   onEdit,
   onToggle,
   onDelete,
@@ -98,7 +101,8 @@ export function ProvidersPage({
             type="button"
             className="btn btn-secondary"
             onClick={onImport}
-            disabled={importing}
+            disabled={importing || Boolean(importBlockedReason)}
+            title={importBlockedReason ?? undefined}
           >
             <Icon
               name="refresh"

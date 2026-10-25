@@ -5,6 +5,8 @@ import { cx } from '../utils'
 interface SidebarProps {
   page: PageKey
   providerCount: number
+  /** 数据存在哪儿：服务端（多端共用）还是仅本机。 */
+  storageLabel: string
   onNavigate: (page: PageKey) => void
 }
 
@@ -22,6 +24,7 @@ const NAV_ITEMS: Array<{
 export function Sidebar({
   page,
   providerCount,
+  storageLabel,
   onNavigate,
 }: SidebarProps) {
   return (
@@ -50,7 +53,7 @@ export function Sidebar({
         <div className="sidebar-bottom">
           <div className="sidebar-foot">
             <span className="local-dot" />
-            本地优先 · 仅存本机
+            {storageLabel}
           </div>
         </div>
       </div>

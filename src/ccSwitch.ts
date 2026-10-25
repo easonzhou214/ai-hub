@@ -43,6 +43,16 @@ export async function fetchCcSwitchProviders(): Promise<
   }
 
   if (!response.ok) {
+    // 服务端会给出可执行的说明（例如「只允许本机访问」/「没有找到数据库」），
+    // 原样透出比统一的「无法读取 CC Switch 配置」有用得多。
+    let detail = ''
+    try {
+      const payload = (await response.json()) as { error?: unknown }
+      if (typeof payload?.error === 'string') detail = payload.error.trim()
+    } catch {
+      // 静态部署时这里拿到的可能是 index.html，忽略即可。
+    }
+    if (detail) throw new Error(detail)
     throw new Error(
       response.status === 404
         ? 'CC Switch 导入需要本地开发服务（npm run dev）'

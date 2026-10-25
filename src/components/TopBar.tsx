@@ -15,6 +15,14 @@ interface TopBarProps {
   importing: boolean
   user: Account
   storageMode: 'server' | 'local'
+  /** 同步在哪台机器上执行，形如「在本机」「在服务器 xxx 上」。 */
+  syncRunner: string
+  /** 是不是从别的设备打开（同步由服务器代劳）。 */
+  isRemoteClient: boolean
+  /** 这台设备读不到 CC Switch 时，置灰同步按钮的原因。 */
+  syncBlockedReason: string | null
+  /** CC Switch 相关动作（导入 / 网页登录）在这台设备上是否可用。 */
+  bridgeAvailable: boolean
   onPushLocal: () => void
   onRefresh: () => void
   onToggleAutoSync: () => void
@@ -34,6 +42,10 @@ export function TopBar({
   importing,
   user,
   storageMode,
+  syncRunner,
+  isRemoteClient,
+  syncBlockedReason,
+  bridgeAvailable,
   onPushLocal,
   onRefresh,
   onToggleAutoSync,
@@ -99,9 +111,12 @@ export function TopBar({
           type="button"
           className="btn btn-ghost btn-sm sync-button"
           onClick={onRefresh}
-          disabled={syncing}
+          disabled={syncing || Boolean(syncBlockedReason)}
           aria-label="同步供应商额度"
-          title={`上次同步：${relativeTime(lastSyncedAt)}`}
+          title={
+            syncBlockedReason ??
+            `${syncRunner}执行 · 上次同步 ${relativeTime(lastSyncedAt)}`
+          }
         >
           <Icon
             name="refresh"
@@ -207,6 +222,8 @@ export function TopBar({
                     {isAdmin
                       ? '管理员 · 全部权限'
                       : `@${user.username} · 普通账号`}
+                    {' · '}
+                    {isRemoteClient ? '客户端（同步在服务器）' : '本机'}
                   </span>
                 </div>
               </div>
@@ -218,6 +235,12 @@ export function TopBar({
                   setOpen(null)
                   onImport()
                 }}
+                disabled={!bridgeAvailable}
+                title={
+                  bridgeAvailable
+                    ? undefined
+                    : 'CC Switch 只存在运行服务的那台机器上，这台设备读不到'
+                }
               >
                 <Icon
                   name="refresh"
@@ -225,7 +248,9 @@ export function TopBar({
                   className={importing ? 'spinning' : undefined}
                 />
                 {importing ? '正在导入…' : '从 CC Switch 导入'}
-                <span className="menu-hint">本地</span>
+                <span className="menu-hint">
+                  {bridgeAvailable ? '本机数据' : '仅服务器'}
+                </span>
               </button>
               {storageMode === 'server' && (
                 <button
@@ -292,9 +317,11 @@ export function TopBar({
                 <span className="menu-hint">@{user.username}</span>
               </button>
               <div className="popover-foot">
-                {storageMode === 'server'
-                  ? 'AI Hub v0.2 · 数据保存在服务端，多设备共享'
-                  : 'AI Hub v0.2 · 数据保存在此浏览器'}
+                {`AI Hub v${__APP_VERSION__} · ${
+                  storageMode === 'server'
+                    ? '数据保存在服务端，多设备共享'
+                    : '数据仅保存在此浏览器'
+                }`}
               </div>
             </div>
           )}

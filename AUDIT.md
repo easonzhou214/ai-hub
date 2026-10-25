@@ -326,3 +326,17 @@ src/
 - vitest 与 eslint
 
 这些是纯工程改造，不影响当前功能，单独一轮做更安全。
+
+## 九、补充修复：「同步提示成功但没同步」
+
+现象：在别的设备上打开页面点「同步额度」，提示成功、数字没变。追查后确认是三个问题叠在一起：
+
+1. **「上次同步」在失败时也被写成当前时间**。`runSync` 无条件 `setLastSyncedAt(now)`，HUD 常驻显示「上次同步 刚刚」，toast 又只活 2.8 秒，所以看到的是「成功」而数据没动。现在只有 `realSynced > 0` 才写；失败只更新卡片上的 `syncError`。自动同步的重试因此改用内存里的 `lastAttemptRef` + 60s 冷却节流。
+2. **`200 + loginRequired` 被算成同步成功**。网页登录态过期时接口仍返回 200，`fetchProviderBilling` 正常 resolve，`realSynced` 就 +1。现在这类结果单列成 `needLogin`，提示改成「X 的登录态已过期」，不再混进成功数；导入流程 `syncImportedProviders` 同理。
+3. **客户端根本调不到接口，界面却没提示**。`/api/cc-switch/*` 在 `cc-switch.ts` 里用 `isLoopback(request)` 做了限制，非本机一律 403（`/api/state` 不受限，所以列表能显示、只有同步失败）。现在：
+
+   - 新增 `vite-plugins/runtime.ts` → `GET /api/runtime`，按连接来源判断 `role: server | client`，带上主机名、局域网地址、`syncFromClient`；
+   - 前端 `src/runtime.ts` + `useRuntimeInfo()`，据此置灰「同步额度」「从 CC Switch 导入」「网页登录」，并在 title/账号菜单里写明「在本机执行」还是「在服务器 xxx 上执行」；
+   - 需要放开的场景（局域网自用）用 `AIHUB_ALLOW_REMOTE_SYNC=1` 启动，`vite-plugins/remote-access.ts` 统一读这个开关，`/api/runtime` 的 `syncFromClient` 会同步变化。
+
+顺带修掉两处会误导人的文案：侧边栏写死的「本地优先 · 仅存本机」改成按 `storageMode` 显示「服务端存储 · 多端共用 / 本机存储 · 未连接服务端」；账号浮层写死的 `AI Hub v0.2` 改成 `__APP_VERSION__`（来自 `package.json`）。`fetchCcSwitchProviders` 现在把服务端返回的 `error` 原样透出，不再是笼统的「无法读取 CC Switch 配置」。

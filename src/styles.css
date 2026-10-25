@@ -1212,6 +1212,17 @@ svg {
   background: #f6f8f7;
 }
 
+/* 这台设备用不了的入口（例如客户端读不到 CC Switch）。 */
+.menu-item:disabled {
+  color: #a6adb6;
+  cursor: default;
+  background: transparent;
+}
+
+.menu-item:disabled svg {
+  color: #b9c0c8;
+}
+
 .menu-item svg {
   color: #7d8794;
 }
@@ -3484,6 +3495,16 @@ svg {
 
 .toast-icon.is-error {
   background: #c95858;
+}
+
+/* 中性提示：既不是成功也不是失败，例如「这台设备不能同步」。 */
+.toast.is-info {
+  background: #22282b;
+}
+
+.toast-icon.is-info {
+  color: #dbe4ea;
+  background: #4a5a63;
 }
 
 /* ============================== Sync states & boot ============================== */

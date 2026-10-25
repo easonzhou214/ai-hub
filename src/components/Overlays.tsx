@@ -78,7 +78,7 @@ export function Toast({
   onDismiss,
 }: {
   message: string | null
-  tone?: 'success' | 'error'
+  tone?: 'success' | 'error' | 'info'
   onDismiss: () => void
 }) {
   useEffect(() => {
@@ -89,11 +89,20 @@ export function Toast({
 
   if (!message) return null
 
+  const isError = tone === 'error'
+  const isInfo = tone === 'info'
+
   return (
     <div className="toast-layer" role="status" aria-live="polite">
-      <div className={cx('toast', tone === 'error' && 'is-error')}>
-        <span className={cx('toast-icon', tone === 'error' && 'is-error')}>
-          <Icon name={tone === 'error' ? 'alert' : 'check'} size={12} />
+      <div className={cx('toast', isError && 'is-error', isInfo && 'is-info')}>
+        <span
+          className={cx(
+            'toast-icon',
+            isError && 'is-error',
+            isInfo && 'is-info',
+          )}
+        >
+          <Icon name={isError ? 'alert' : isInfo ? 'info' : 'check'} size={12} />
         </span>
         {message}
       </div>

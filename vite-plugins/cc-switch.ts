@@ -18,6 +18,7 @@ import {
 } from './krill'
 import { logSyncEvent, readSyncEvents, SYNC_LOG_DIR } from './sync-log'
 import { getUsageSnapshot, saveUsageSnapshot } from './usage-cache'
+import { remoteSyncAllowed } from './remote-access'
 
 /**
  * Local-only bridge to CC Switch, Codex's active provider, and quota endpoints.
@@ -945,9 +946,11 @@ function ccSwitchMiddleware(
     return
   }
 
-  if (!isLoopback(request)) {
+  if (!isLoopback(request) && !remoteSyncAllowed()) {
     sendJson(response, 403, {
-      error: 'AI Hub 本地接口只允许本机访问',
+      error:
+        'AI Hub 本地接口只允许本机访问：请在这台机器上打开页面，或用 AIHUB_ALLOW_REMOTE_SYNC=1 启动服务',
+      reason: 'remote-blocked',
     })
     return
   }
