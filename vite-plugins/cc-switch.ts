@@ -43,6 +43,7 @@ const CLIENT_LOG_PATH = '/api/cc-switch/log'
 const DB_PATH = join(homedir(), '.cc-switch', 'cc-switch.db')
 const CODEX_CONFIG_PATH = join(homedir(), '.codex', 'config.toml')
 const REQUEST_TIMEOUT_MS = 12_000
+const OPTIONAL_REQUEST_TIMEOUT_MS = 3_000
 const SYNC_ATTEMPTS = 3
 const RETRY_DELAYS_MS = [500, 1_500]
 /** 与 package.json 保持一致，避免请求头里写死的版本号再次漂移。 */
@@ -178,6 +179,7 @@ function isRetryableSyncError(error: unknown) {
 }
 
 let browserQueue: Promise<unknown> = Promise.resolve()
+const usageReadsInFlight = new Map<string, Promise<unknown>>()
 
 /**
  * Krill and Aixor read the same dedicated Chrome profile through CDP. Running
@@ -519,6 +521,13 @@ async function requestJson(
 }
 
 function finiteNumber(value: unknown): number | null {
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === 'string' && value.trim() === '')
+  ) {
+    return null
+  }
   const num = Number(value)
   return Number.isFinite(num) ? num : null
 }
@@ -705,9 +714,9 @@ async function readProviderUsage(
   const base = provider.baseUrl.trim().replace(/\/+$/, '')
 
   const [statusResult, usageResult, modelsResult] = await Promise.allSettled([
-    requestJson(`${origin}/api/status`, undefined, 8_000),
+    requestJson(`${origin}/api/status`, undefined, OPTIONAL_REQUEST_TIMEOUT_MS),
     requestJson(`${origin}/api/usage/token/`, provider.apiKey),
-    requestJson(`${base}/models`, provider.apiKey, 8_000),
+    requestJson(`${base}/models`, provider.apiKey, OPTIONAL_REQUEST_TIMEOUT_MS),
   ])
 
   if (usageResult.status === 'rejected') {
@@ -868,9 +877,21 @@ async function handleUsage(
       }
     }
 
-    const payload = kind
-      ? await withBrowserLock(readWithRetry)
-      : await readWithRetry()
+    let pendingRead = usageReadsInFlight.get(sourceId)
+    if (!pendingRead) {
+      pendingRead = kind
+        ? withBrowserLock(readWithRetry)
+        : readWithRetry()
+      usageReadsInFlight.set(sourceId, pendingRead)
+      const ownedRead = pendingRead
+      const clearRead = () => {
+        if (usageReadsInFlight.get(sourceId) === ownedRead) {
+          usageReadsInFlight.delete(sourceId)
+        }
+      }
+      void ownedRead.then(clearRead, clearRead)
+    }
+    const payload = await pendingRead
 
     const loginRequired = Boolean(
       payload &&
@@ -886,7 +907,7 @@ async function handleUsage(
       phase: 'usage',
       provider: provider.name,
       sourceId,
-      attempt: attempts,
+      attempt: attempts || undefined,
       durationMs: Date.now() - startedAt,
       message: loginRequired ? '需要登录才能读取账户额度' : '同步成功',
     })

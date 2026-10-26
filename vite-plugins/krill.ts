@@ -679,6 +679,13 @@ async function ensureAixorPageForReading() {
 }
 
 function finiteNumber(value: unknown): number | null {
+  if (
+    value === null ||
+    value === undefined ||
+    (typeof value === 'string' && value.trim() === '')
+  ) {
+    return null
+  }
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -872,7 +879,7 @@ export async function fetchKrillModelCount(
         Accept: 'application/json',
         Authorization: `Bearer ${apiKey}`,
       },
-      signal: AbortSignal.timeout(8_000),
+      signal: AbortSignal.timeout(3_000),
     })
     if (!response.ok) return 0
     const payload = (await response.json()) as {

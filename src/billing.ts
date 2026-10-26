@@ -108,7 +108,7 @@ export function readableSyncError(error: unknown) {
 
 const SYNC_REQUEST_ATTEMPTS = 3
 const SYNC_RETRY_DELAYS_MS = [400, 1_200]
-const SYNC_REQUEST_TIMEOUT_MS = 20_000
+const SYNC_REQUEST_TIMEOUT_MS = 60_000
 
 /**
  * Carries the last snapshot the local bridge managed to read. When a sync fails
@@ -184,6 +184,8 @@ async function fetchUsagePayloadOnce(
   sourceId: string,
 ): Promise<ProviderUsagePayload> {
   let response: Response
+  let text: string
+  const signal = AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS)
   try {
     response = await fetch('/api/cc-switch/usage', {
       method: 'POST',
@@ -194,9 +196,16 @@ async function fetchUsagePayloadOnce(
       body: JSON.stringify({ sourceId }),
       cache: 'no-store',
       // 桥接进程卡住时不要挂到浏览器 TCP 超时。
-      signal: AbortSignal.timeout(SYNC_REQUEST_TIMEOUT_MS),
+      signal,
     })
+    text = await response.text()
   } catch {
+    if (signal.aborted) {
+      throw new UsageRequestError(
+        '额度查询等待超时，服务端可能仍在处理，请查看同步日志',
+        false,
+      )
+    }
     throw new UsageRequestError(
       '无法连接本地 CC Switch 查询服务，请确认 npm run dev 仍在运行',
       true,
@@ -204,7 +213,6 @@ async function fetchUsagePayloadOnce(
   }
 
   let payload: unknown = null
-  const text = await response.text()
   try {
     payload = text ? JSON.parse(text) : null
   } catch {
