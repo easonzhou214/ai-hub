@@ -29,7 +29,7 @@ interface OverviewProps {
   onNavigate: (page: PageKey) => void
   onLogin: (provider: Provider) => void
   loginBusyId?: string
-  codexProviderId?: string
+  activeProviderIds?: string[]
 }
 
 const STATUS_ORDER: Record<string, number> = {
@@ -53,7 +53,7 @@ export function Overview({
   onNavigate,
   onLogin,
   loginBusyId,
-  codexProviderId,
+  activeProviderIds,
 }: OverviewProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const enabled = providers.filter((provider) => provider.enabled)
@@ -316,7 +316,7 @@ export function Overview({
                       onEdit={onEdit}
                       onLogin={onLogin}
                       loginBusy={loginBusyId === provider.sourceId}
-                      codexActive={provider.id === codexProviderId}
+                      burning={activeProviderIds?.includes(provider.id) ?? false}
                     />
                   ))}
                 </div>

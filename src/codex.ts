@@ -9,6 +9,8 @@ export interface CodexCurrentSnapshot {
   model: string
   profile: string
   sourceId: string | null
+  /** 正在使用的 key 尾号，用于区分共用同一 base_url 的多个账号。 */
+  keySuffix?: string | null
   official: boolean
   error?: string
 }
@@ -42,7 +44,8 @@ export function normalizeBaseUrl(value: string | undefined) {
 
 /**
  * Resolve the Codex config to one of the providers shown in AI Hub.
- * The CC Switch source id is most reliable, then the base URL.
+ * The CC Switch source id is most reliable, then the API key suffix (several
+ * accounts can share one base URL), and the base URL only as a last resort.
  */
 export function findCodexProvider(
   providers: Provider[],
@@ -56,6 +59,14 @@ export function findCodexProvider(
       (provider) => provider.sourceId === current.sourceId,
     )
     if (bySource) return bySource
+  }
+
+  const suffix = current.keySuffix?.trim()
+  if (suffix) {
+    const byKey = coding.find((provider) =>
+      (provider.apiKey ?? '').trim().endsWith(suffix),
+    )
+    if (byKey) return byKey
   }
 
   const target = normalizeBaseUrl(current.baseUrl)

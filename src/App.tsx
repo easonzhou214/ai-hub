@@ -36,6 +36,12 @@ import {
   findCodexProvider,
   type CodexCurrentSnapshot,
 } from './codex'
+import {
+  detectBurning,
+  isFreshSnapshot,
+  markBurning,
+  usageIncreased,
+} from './burning'
 import { useHubState } from './hubState'
 import { Overview } from './pages/Overview'
 import { ProvidersPage } from './pages/Providers'
@@ -128,6 +134,7 @@ export default function App() {
   const [codexCurrent, setCodexCurrent] = useState<CodexCurrentSnapshot | null>(
     null,
   )
+  const [burningIds, setBurningIds] = useState<string[]>([])
   const [booted, setBooted] = useState(false)
   const [accountsOpen, setAccountsOpen] = useState(false)
   const [bootMessage, setBootMessage] = useState('正在载入已保存的配置…')
@@ -171,6 +178,17 @@ export default function App() {
     // Keep the last marker through transient bridge failures.
     if (next) setCodexCurrent(next)
   }, [])
+
+  /**
+   * 额度增量 → 「正在消耗」标记。
+   *
+   * 远端部署时页面读不到本机 `~/.codex/config.toml`，所以这条链路完全不依赖
+   * `/api/codex/current`：只看两次同步之间谁的累计用量涨了、余额掉了。
+   */
+  useEffect(() => {
+    if (!hubReady || providers.length === 0) return
+    setBurningIds(detectBurning(providers))
+  }, [hubReady, providers])
 
   const dismissToast = useCallback(() => setToast(null), [])
 
@@ -689,6 +707,16 @@ export default function App() {
             }
           }),
         )
+        // 同步前后都在内存里：这一轮涨了的账号立刻点亮，新设备不用干等下一轮。
+        const burningNow: string[] = []
+        for (const next of updated) {
+          if (!isInterfaceSynced(next)) continue
+          const prev = providers.find((item) => item.id === next.id)
+          if (!prev || !isFreshSnapshot(prev)) continue
+          if (usageIncreased(prev, next)) burningNow.push(next.id)
+        }
+        markBurning(burningNow)
+
         const syncedById = new Map(updated.map((provider) => [provider.id, provider]))
         setProviders((current) =>
           current.map((provider) => {
@@ -1013,6 +1041,13 @@ export default function App() {
   )
   const codexProviderId = codexProvider?.id
 
+  // 本机桥接可用时（本地开发）它更准，远端部署只有额度增量这一路信号。
+  const activeProviderIds = useMemo(() => {
+    const ids = new Set(burningIds)
+    if (codexProviderId) ids.add(codexProviderId)
+    return Array.from(ids)
+  }, [burningIds, codexProviderId])
+
   if (!user) {
     return <LoginPage onSignIn={handleSignIn} accountCount={accounts.length} />
   }
@@ -1068,7 +1103,7 @@ export default function App() {
               onNavigate={navigate}
               onLogin={handleLoginProvider}
               loginBusyId={loginBusyId}
-              codexProviderId={codexProviderId}
+              activeProviderIds={activeProviderIds}
             />
           )}
           {page === 'providers' && (
@@ -1085,7 +1120,7 @@ export default function App() {
               onDelete={handleDelete}
               onLogin={handleLoginProvider}
               loginBusyId={loginBusyId}
-              codexProviderId={codexProviderId}
+              activeProviderIds={activeProviderIds}
             />
           )}
           {page === 'usage' && (
@@ -1094,7 +1129,7 @@ export default function App() {
               canManage={canManage}
               onEdit={openEdit}
               onNavigate={navigate}
-              codexProviderId={codexProviderId}
+              activeProviderIds={activeProviderIds}
             />
           )}
         </main>

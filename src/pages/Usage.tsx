@@ -35,7 +35,7 @@ interface UsagePageProps {
   canManage: boolean
   onEdit: (provider: Provider) => void
   onNavigate: (page: PageKey) => void
-  codexProviderId?: string
+  activeProviderIds?: string[]
 }
 
 const TYPE_COLOR: Record<ProviderType, string> = {
@@ -68,7 +68,7 @@ export function UsagePage({
   canManage,
   onEdit,
   onNavigate,
-  codexProviderId,
+  activeProviderIds,
 }: UsagePageProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const enabled = providers.filter((provider) => provider.enabled)
@@ -515,14 +515,14 @@ export function UsagePage({
                   lastSync,
                   money,
                 } = describeProvider(provider)
-                const codexActive = provider.id === codexProviderId
+                const burning = activeProviderIds?.includes(provider.id) ?? false
                 return (
                   <div
                     key={provider.id}
                     className={cx(
                       'ut-row',
                       !provider.enabled && 'is-disabled',
-                      codexActive && 'is-codex-active',
+                      burning && 'is-codex-active',
                     )}
                     role={canManage ? 'button' : undefined}
                     tabIndex={canManage ? 0 : undefined}
@@ -545,12 +545,12 @@ export function UsagePage({
                       <div>
                         <div className="ut-name-line">
                           <strong>{provider.name}</strong>
-                          {codexActive && (
+                          {burning && (
                             <i
                               className="ut-codex-flame"
                               role="img"
-                              aria-label="Codex 当前使用的供应商，额度正在消耗"
-                              title="Codex 当前使用的供应商，额度正在消耗"
+                              aria-label="最近一次同步发现额度在减少，说明这个供应商正在被使用"
+                              title="最近一次同步发现额度在减少，说明这个供应商正在被使用"
                             >
                               <Icon name="flame" size={12} />
                             </i>
@@ -666,9 +666,9 @@ export function UsagePage({
                           tone={usageTone(quota.percent)}
                           thin
                           label={`${provider.name} 剩余额度${
-                codexActive ? '，Codex 正在消耗' : ''
+                burning ? '，正在消耗额度' : ''
               }`}
-                          active={codexActive}
+                          active={burning}
                         />
                       )}
                       {hasBoth && (

@@ -87,14 +87,14 @@ export function ProgressBar({
   )
 }
 
-export function CodexLiveBadge() {
+export function BurningBadge() {
   return (
     <span
       className="codex-live-badge"
-      title="Codex 当前使用的供应商，额度正在消耗"
+      title="最近一次同步发现额度在减少，说明这个供应商正在被使用"
     >
       <Icon name="flame" size={11} />
-      Codex 在用
+      正在消耗
     </span>
   )
 }

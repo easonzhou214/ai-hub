@@ -57,6 +57,11 @@ export interface CodexCurrentSnapshot {
   profile: string
   /** CC Switch row that matches this Codex config, if any. */
   sourceId: string | null
+  /**
+   * Last 6 characters of the API key Codex is actually sending. 同一中转站
+   * 常有多把 key 共用 base_url，前端用它区分到底是哪个账号在烧额度。
+   */
+  keySuffix: string | null
   official: boolean
   error?: string
 }
@@ -304,6 +309,12 @@ function parseTomlTables(text: string) {
     const line = rawLine.trim()
     if (!line || line.startsWith('#')) continue
 
+    // `[[array.of.tables]]`：不重置的话，后面的 path/enabled 会被写进上一张表。
+    if (line.startsWith('[[')) {
+      current = {}
+      continue
+    }
+
     const header = /^\[([^\]]+)\]$/.exec(line)
     if (header) {
       const name = header[1].replace(/["']/g, '').trim()
@@ -342,6 +353,7 @@ function readCodexCurrent(): CodexCurrentSnapshot {
     model: '',
     profile: '',
     sourceId: null,
+    keySuffix: null,
     official: false,
     error,
   })
@@ -368,15 +380,32 @@ function readCodexCurrent(): CodexCurrentSnapshot {
   const baseUrl = (modelTable?.base_url ?? '').trim()
   const official = providerId === 'openai' && !baseUrl
   const name = (modelTable?.name ?? (official ? 'OpenAI 官方' : providerId)).trim()
+  // Codex 真正发出去的那把 key：同域名下多账号靠它区分，绝不能回传明文。
+  const configKey = (
+    modelTable?.experimental_bearer_token ??
+    modelTable?.api_key ??
+    profileTable?.experimental_bearer_token ??
+    profileTable?.api_key ??
+    ''
+  ).trim()
+  const keySuffix = configKey ? configKey.slice(-6) : null
 
   let sourceId: string | null = null
-  if (baseUrl) {
+  if (baseUrl || configKey) {
     const ccSwitch = readCcSwitchProviders()
     if (ccSwitch.available) {
       const target = normalizeBaseUrl(baseUrl)
-      const match = ccSwitch.providers.find(
-        (provider) => normalizeBaseUrl(provider.baseUrl) === target,
-      )
+      const sameBase = baseUrl
+        ? ccSwitch.providers.filter(
+            (provider) => normalizeBaseUrl(provider.baseUrl) === target,
+          )
+        : []
+      // 匹配优先级：API Key（唯一）→ CC Switch 当前账号 → 同 base_url 第一个。
+      const byKey = configKey
+        ? ccSwitch.providers.find((provider) => provider.apiKey === configKey)
+        : undefined
+      const match =
+        byKey ?? sameBase.find((provider) => provider.isCurrent) ?? sameBase[0]
       sourceId = match?.sourceId ?? null
     }
   }
@@ -389,6 +418,7 @@ function readCodexCurrent(): CodexCurrentSnapshot {
     model,
     profile,
     sourceId,
+    keySuffix,
     official,
   }
 }

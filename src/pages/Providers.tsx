@@ -10,7 +10,7 @@ import {
   logoText,
 } from '../utils'
 import {
-  CodexLiveBadge,
+  BurningBadge,
   EmptyState,
   ProgressBar,
   ProviderLogo,
@@ -38,7 +38,7 @@ interface ProvidersPageProps {
   onDelete: (provider: Provider) => void
   onLogin: (provider: Provider) => void
   loginBusyId?: string
-  codexProviderId?: string
+  activeProviderIds?: string[]
 }
 
 function hostOf(url: string) {
@@ -63,7 +63,7 @@ export function ProvidersPage({
   onDelete,
   onLogin,
   loginBusyId,
-  codexProviderId,
+  activeProviderIds,
 }: ProvidersPageProps) {
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
@@ -278,14 +278,14 @@ export function ProvidersPage({
                 lastSync,
                 money,
               } = describeProvider(provider)
-              const codexActive = provider.id === codexProviderId
+              const burning = activeProviderIds?.includes(provider.id) ?? false
               return (
                 <div
                   key={provider.id}
                   className={cx(
                     'pt-row',
                     !provider.enabled && 'is-disabled',
-                    codexActive && 'is-codex-active',
+                    burning && 'is-codex-active',
                   )}
                 >
                   <div className="pt-provider">
@@ -383,7 +383,7 @@ export function ProvidersPage({
                           <span className="pt-percent">
                             {formatPercent(remaining)}
                           </span>
-                          {codexActive && <CodexLiveBadge />}
+                          {burning && <BurningBadge />}
                         </span>
                       )}
                       <span className="pt-remaining">
@@ -431,9 +431,9 @@ export function ProvidersPage({
                         tone={usageTone(quota.percent)}
                         thin
                         label={`${provider.name} 剩余额度${
-                codexActive ? '，Codex 正在消耗' : ''
+                burning ? '，正在消耗额度' : ''
               }`}
-                        active={codexActive}
+                        active={burning}
                       />
                     )}
                     <span className="pt-sub">

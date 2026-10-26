@@ -10,7 +10,7 @@ import {
   resetLabel,
 } from '../utils'
 import {
-  CodexLiveBadge,
+  BurningBadge,
   ProgressBar,
   ProviderLogo,
   StatusBadge,
@@ -23,7 +23,7 @@ export function ProviderCard({
   onEdit,
   onLogin,
   loginBusy = false,
-  codexActive = false,
+  burning = false,
 }: {
   provider: Provider
   /** 普通账号只读：隐藏「管理」入口。 */
@@ -31,8 +31,8 @@ export function ProviderCard({
   onEdit: (provider: Provider) => void
   onLogin?: (provider: Provider) => void
   loginBusy?: boolean
-  /** Codex is currently using this provider. */
-  codexActive?: boolean
+  /** 最近一次同步发现额度在减少，这个供应商正在被使用。 */
+  burning?: boolean
 }) {
   const {
     quota,
@@ -62,7 +62,7 @@ export function ProviderCard({
       className={cx(
         'provider-card',
         !provider.enabled && 'is-disabled',
-        codexActive && 'is-codex-active',
+        burning && 'is-codex-active',
       )}
     >
       <div className="pc-top">
@@ -86,7 +86,7 @@ export function ProviderCard({
         <div className="pc-usage-head">
           <span className="pc-usage-label">
             {needsLogin ? '账户额度' : quota.label}
-            {codexActive && <CodexLiveBadge />}
+            {burning && <BurningBadge />}
           </span>
           {needsLogin ? (
             <span className="pc-usage-value" aria-hidden="true">
@@ -183,9 +183,9 @@ export function ProviderCard({
               value={remaining}
               tone={usageTone(quota.percent)}
               label={`${provider.name} 剩余额度${
-                codexActive ? '，Codex 正在消耗' : ''
+                burning ? '，正在消耗额度' : ''
               }`}
-              active={codexActive}
+              active={burning}
             />
             <div className="pc-usage-meta">
               <span>
