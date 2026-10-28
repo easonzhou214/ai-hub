@@ -4676,6 +4676,44 @@ svg {
   font-variant-numeric: tabular-nums;
 }
 
+/* 订阅型套餐（Krill 月卡）的套餐信息：总额度 / 到期 / 订阅号 / 端点 */
+.auto-plan-meta {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+  padding: 9px 10px;
+  background: #fafbfc;
+  border: 1px solid #eef1f4;
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #8d98a4;
+}
+
+.auto-plan-meta > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.auto-plan-meta > div > span {
+  flex: none;
+}
+
+.auto-plan-meta strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: #44505e;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.auto-plan-meta small {
+  font-size: 12px;
+  font-weight: 500;
+  color: #98a2ad;
+}
+
 .ut-wallet-sub {
   display: flex;
   align-items: center;

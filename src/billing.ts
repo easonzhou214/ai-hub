@@ -25,6 +25,17 @@ export interface BillingSnapshot {
   accountBalance?: number
   /** 供应商返回的套餐名，同步时一并展示 */
   planName?: string
+  /** 网页订阅返回的真实套餐名（如「轻享月卡」），与上面的导入标签分开存 */
+  subscriptionPlan?: string
+  /**
+   * 套餐总额（例如 Krill 月卡 30 天的 $1302）。`quotaTotal` 始终表示真正限流
+   * 的短窗口额度（Krill 是每周 $325.50），两者不能混为一谈。
+   */
+  monthQuota?: { total: number; used: number; remaining: number }
+  subscriptionId?: string
+  subscriptionStartAt?: string
+  entryRoutes?: string[]
+  expiresAt?: string
   /** 额度单位，缺省为美元 */
   quotaUnit?: 'usd' | 'generation'
   /** 额度计价币种，来自上游 quota_display_type */
@@ -66,12 +77,25 @@ interface WebAccountUsagePayload {
     creditBalanceUsd: number | null
     lifetimeUsedUsd?: number | null
     planNames: string[]
+    planPriceUsd?: number | null
+    subscriptionId?: string | null
+    subscriptionStartAt?: string
+    subscriptionEndAt: string
+    /** 套餐总额（Krill 是 30 天月额度） */
     quotaTotalUsd: number | null
     quotaUsedUsd: number | null
     quotaRemainingUsd: number | null
+    /** 短周期窗口额度（Krill 是每周一份），有它时优先作为周期额度 */
+    window?: {
+      totalUsd: number
+      usedUsd: number
+      remainingUsd: number
+      windowStartAt: string
+      windowResetAt: string
+    } | null
     resetAt: string
-    subscriptionEndAt: string
     cycle: 'week' | 'month'
+    entryRoutes?: string[]
   } | null
   modelCount: number
   fetchedAt: string
@@ -326,29 +350,108 @@ function parseWebAccountSnapshot(
     }
   }
 
-  if (
-    account.quotaTotalUsd !== null &&
-    account.quotaTotalUsd > 0
-  ) {
-    const total = account.quotaTotalUsd
-    const remaining =
-      account.quotaRemainingUsd !== null
-        ? Math.max(account.quotaRemainingUsd, 0)
-        : null
-    const used =
-      account.quotaUsedUsd !== null
-        ? Math.max(account.quotaUsedUsd, 0)
-        : remaining !== null
-          ? Math.max(total - remaining, 0)
-          : 0
+  /**
+   * 网页套餐名单独放在 `subscriptionPlan`：`planName` 是 CC Switch 导入时
+   * 按模型生成的标签（如「Codex · gpt-6.1-sol」），是用户认得的名字，
+   * 不能被接口返回的套餐名覆盖掉。
+   */
+  const planMeta = {
+    ...(account.planNames?.[0] ? { subscriptionPlan: account.planNames[0] } : {}),
+    ...(account.subscriptionEndAt
+      ? { expiresAt: account.subscriptionEndAt }
+      : {}),
+    ...(account.subscriptionId
+      ? { subscriptionId: account.subscriptionId }
+      : {}),
+    ...(account.subscriptionStartAt
+      ? { subscriptionStartAt: account.subscriptionStartAt }
+      : {}),
+    ...(account.entryRoutes && account.entryRoutes.length > 0
+      ? { entryRoutes: account.entryRoutes }
+      : {}),
+  }
+
+  /**
+   * Krill 这类套餐有两层额度，混用会把「月总额」当成「本周额度」展示：
+   *   window   每周 $325.50（真正限流，用完就拒）
+   *   total    整份套餐 $1302（30 天）
+   * 短窗口存在时以它为周期额度，套餐总额单独放进 monthQuota。
+   */
+  const planTotal =
+    account.quotaTotalUsd !== null && account.quotaTotalUsd > 0
+      ? account.quotaTotalUsd
+      : null
+  const window =
+    account.window && account.window.totalUsd > 0 ? account.window : null
+
+  const planMonthQuota =
+    planTotal === null
+      ? null
+      : {
+          total: roundMoney(planTotal),
+          used: roundMoney(
+            account.quotaUsedUsd !== null
+              ? Math.max(account.quotaUsedUsd, 0)
+              : Math.max(planTotal - (account.quotaRemainingUsd ?? planTotal), 0),
+          ),
+          remaining: roundMoney(
+            account.quotaRemainingUsd !== null
+              ? Math.max(account.quotaRemainingUsd, 0)
+              : Math.max(
+                  planTotal -
+                    (account.quotaUsedUsd !== null
+                      ? Math.max(account.quotaUsedUsd, 0)
+                      : 0),
+                  0,
+                ),
+          ),
+        }
+
+  if (window) {
+    const total = roundMoney(window.totalUsd)
+    const remaining = roundMoney(Math.max(window.remainingUsd, 0))
+    const used = roundMoney(
+      Math.max(window.usedUsd > 0 ? window.usedUsd : total - remaining, 0),
+    )
+    return {
+      quotaTotal: total,
+      quotaUsed: used,
+      limitUnknown: false,
+      keyUnlimited: false,
+      lifetimeUsed: roundMoney(
+        account.lifetimeUsedUsd !== null &&
+          account.lifetimeUsedUsd !== undefined
+          ? Math.max(account.lifetimeUsedUsd, 0)
+          : used,
+      ),
+      accountBalance:
+        account.creditBalanceUsd !== null
+          ? roundMoney(account.creditBalanceUsd)
+          : undefined,
+      // 月总额与周窗口金额相同时不重复展示。
+      monthQuota:
+        planMonthQuota && planMonthQuota.total !== total
+          ? planMonthQuota
+          : undefined,
+      ...planMeta,
+      modelCount,
+      resetAt: window.windowResetAt || account.resetAt,
+      cycle: 'week',
+      syncedAt,
+      loginRequired: false,
+      loginProvider: payload.loginProvider,
+    }
+  }
+
+  if (planTotal !== null && planMonthQuota) {
     const lifetime =
       account.lifetimeUsedUsd !== null &&
       account.lifetimeUsedUsd !== undefined
         ? Math.max(account.lifetimeUsedUsd, 0)
-        : used
+        : planMonthQuota.used
     return {
-      quotaTotal: roundMoney(total),
-      quotaUsed: roundMoney(used),
+      quotaTotal: planMonthQuota.total,
+      quotaUsed: planMonthQuota.used,
       limitUnknown: false,
       keyUnlimited: false,
       lifetimeUsed: roundMoney(lifetime),
@@ -356,6 +459,7 @@ function parseWebAccountSnapshot(
         account.creditBalanceUsd !== null
           ? roundMoney(account.creditBalanceUsd)
           : undefined,
+      ...planMeta,
       modelCount,
       resetAt: account.resetAt,
       cycle: account.cycle,
@@ -378,6 +482,7 @@ function parseWebAccountSnapshot(
       keyUnlimited: false,
       lifetimeUsed: roundMoney(lifetime),
       accountBalance: roundMoney(account.creditBalanceUsd),
+      ...planMeta,
       modelCount,
       resetAt: '',
       cycle: 'month',
@@ -393,6 +498,7 @@ function parseWebAccountSnapshot(
     limitUnknown: true,
     keyUnlimited: false,
     lifetimeUsed: 0,
+    ...planMeta,
     modelCount,
     resetAt: '',
     cycle: 'month',
@@ -592,7 +698,17 @@ export function applyBillingSnapshot(
     keyUnlimited: snapshot.keyUnlimited,
     lifetimeUsed: snapshot.lifetimeUsed,
     accountBalance: snapshot.accountBalance,
-    planName: snapshot.planName ?? provider.planName,
+    planName: provider.planName || snapshot.planName || '',
+    subscriptionPlan: snapshot.subscriptionPlan ?? provider.subscriptionPlan,
+    monthQuota: snapshot.monthQuota,
+    subscriptionId: snapshot.subscriptionId ?? provider.subscriptionId,
+    subscriptionStartAt:
+      snapshot.subscriptionStartAt ?? provider.subscriptionStartAt,
+    entryRoutes:
+      snapshot.entryRoutes && snapshot.entryRoutes.length > 0
+        ? snapshot.entryRoutes
+        : provider.entryRoutes,
+    expiresAt: snapshot.expiresAt || provider.expiresAt,
     quotaUnit: snapshot.quotaUnit,
     modelCount: snapshot.modelCount || provider.modelCount,
     resetAt: snapshot.resetAt,

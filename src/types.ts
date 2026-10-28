@@ -23,6 +23,17 @@ export type ProviderStatus =
   | 'expired'
   | 'disabled'
 
+/**
+ * 订阅型供应商常有两层额度：真正卡住请求的短窗口（如 Krill 的周窗口），
+ * 以及这一份套餐买到的总额度（如 30 天的月额度）。`quotaTotal/quotaUsed`
+ * 始终表示**短窗口**那层，套餐总额放在这里只做展示，不参与百分比计算。
+ */
+export interface QuotaBucket {
+  total: number
+  used: number
+  remaining: number
+}
+
 export interface Provider {
   id: string
   name: string
@@ -34,11 +45,19 @@ export interface Provider {
   billing: BillingMode
   currency: Currency
   planName: string
-  /** 周期额度模式 */
+  /** 周期额度模式：短窗口（daily_limit / quota_per_period）的额度 */
   quotaTotal: number
   quotaUsed: number
   cycle: Cycle
   resetAt: string
+  /** 套餐总额（例如 Krill 月额度 $1302），与上面的短窗口额度区分开 */
+  monthQuota?: QuotaBucket
+  /** 网页订阅信息，仅用于展示 */
+  subscriptionPlan?: string
+  subscriptionId?: string
+  subscriptionStartAt?: string
+  /** 供应商返回的可用端点，例如「直连」「cdn」 */
+  entryRoutes?: string[]
   expiresAt: string
   /** 充值余额模式 */
   balance: number

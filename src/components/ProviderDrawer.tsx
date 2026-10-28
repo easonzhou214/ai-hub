@@ -25,12 +25,15 @@ import {
   createId,
   cx,
   cycleLabel,
+  expiryLabel,
   formatFullDate,
   formatMoney,
   formatQuota,
   getQuotaState,
   isGenerationQuota,
   loginBrand,
+  periodQuotaLabel,
+  periodUsedLabel,
   relativeTime,
 } from '../utils'
 import { syncSourcesFor, type SyncSourceId } from '../syncSources'
@@ -763,7 +766,7 @@ export function ProviderDrawer({
                       <>
                         <div>
                           <span>
-                            {autoPeriod ? '周期额度' : '账户总额'}
+                            {autoPeriod ? periodQuotaLabel(provider) : '账户总额'}
                           </span>
                           <strong>
                             {provider.unlimited
@@ -776,7 +779,7 @@ export function ProviderDrawer({
                         </div>
                         <div>
                           <span>
-                            {autoPeriod ? '本周期已用' : '累计已用'}
+                            {autoPeriod ? periodUsedLabel(provider) : '累计已用'}
                           </span>
                           <strong>
                             {autoPeriod
@@ -813,6 +816,59 @@ export function ProviderDrawer({
                       </strong>
                     </div>
                   )}
+
+                  {provider &&
+                    (provider.monthQuota ||
+                      provider.subscriptionPlan ||
+                      provider.subscriptionId ||
+                      provider.expiresAt ||
+                      (provider.entryRoutes &&
+                        provider.entryRoutes.length > 0)) && (
+                      <div className="auto-plan-meta">
+                        {provider.subscriptionPlan && (
+                          <div>
+                            <span>订阅套餐</span>
+                            <strong>{provider.subscriptionPlan}</strong>
+                          </div>
+                        )}
+                        {provider.monthQuota && (
+                          <div>
+                            <span>月额度（套餐总额）</span>
+                            <strong>
+                              剩余{' '}
+                              {formatQuota(
+                                provider.monthQuota.remaining,
+                                provider,
+                              )}{' '}
+                              /{' '}
+                              {formatQuota(provider.monthQuota.total, provider)}
+                            </strong>
+                          </div>
+                        )}
+                        {provider.subscriptionId && (
+                          <div>
+                            <span>订阅编号</span>
+                            <strong>#{provider.subscriptionId}</strong>
+                          </div>
+                        )}
+                        {provider.expiresAt && (
+                          <div>
+                            <span>套餐到期</span>
+                            <strong>
+                              {formatFullDate(provider.expiresAt)}
+                              <small> · {expiryLabel(provider)}</small>
+                            </strong>
+                          </div>
+                        )}
+                        {provider.entryRoutes &&
+                          provider.entryRoutes.length > 0 && (
+                            <div>
+                              <span>可用端点</span>
+                              <strong>{provider.entryRoutes.join(' / ')}</strong>
+                            </div>
+                          )}
+                      </div>
+                    )}
 
                   {needsLogin && (
                     <>

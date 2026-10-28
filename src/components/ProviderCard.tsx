@@ -7,6 +7,8 @@ import {
   formatPercent,
   formatQuota,
   logoText,
+  periodQuotaLabel,
+  periodUsedLabel,
   resetLabel,
 } from '../utils'
 import {
@@ -56,6 +58,15 @@ export function ProviderCard({
     : provider.billing === 'quota'
       ? `剩余 ${formatQuota(quota.available, provider)}`
       : `余额 ${money(provider.balance)}`
+
+  // 周窗口套餐（Krill）说「本周期」会让人误以为是整份套餐，按实际周期命名。
+  const usedLabel = planBased
+    ? periodUsedLabel(provider)
+    : synced
+      ? '累计已用'
+      : provider.billing === 'quota'
+        ? '已用'
+        : '本月已用'
 
   return (
     <article
@@ -189,19 +200,14 @@ export function ProviderCard({
             />
             <div className="pc-usage-meta">
               <span>
-                {planBased
-                  ? '本周期已用'
-                  : synced
-                    ? '累计已用'
-                    : provider.billing === 'quota'
-                      ? '已用'
-                      : '本月已用'}{' '}
-                {formatQuota(quota.used, provider)}
+                {usedLabel} {formatQuota(quota.used, provider)}
               </span>
               <span>
-                {provider.billing === 'quota'
-                  ? `${planBased ? '周期额度' : synced ? '账户总额' : '总量'} ${formatQuota(quota.total ?? 0, provider)}`
-                  : `预算 ${money(quota.total ?? 0)}`}
+                {provider.monthQuota
+                  ? `月额度 ${formatQuota(provider.monthQuota.total, provider)}`
+                  : provider.billing === 'quota'
+                    ? `${planBased ? periodQuotaLabel(provider) : synced ? '账户总额' : '总量'} ${formatQuota(quota.total ?? 0, provider)}`
+                    : `预算 ${money(quota.total ?? 0)}`}
               </span>
             </div>
           </>

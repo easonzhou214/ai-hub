@@ -224,6 +224,22 @@ export function cycleLabel(cycle: Cycle) {
   return '每月'
 }
 
+/**
+ * 周期额度的标题。Krill 这类套餐的额度按周下发（本周 $325.50），
+ * 统一叫「周期额度」会让人误以为整份套餐（月额度 $1302）归这个周期管。
+ */
+export function periodQuotaLabel(provider: Pick<Provider, 'cycle'>) {
+  if (provider.cycle === 'week') return '本周额度'
+  if (provider.cycle === 'day') return '今日额度'
+  return '周期额度'
+}
+
+export function periodUsedLabel(provider: Pick<Provider, 'cycle'>) {
+  if (provider.cycle === 'week') return '本周已用'
+  if (provider.cycle === 'day') return '今日已用'
+  return '本周期已用'
+}
+
 export function resetLabel(provider: Provider) {
   if (provider.billing === 'balance') return '充值型 · 无周期重置'
   // PixelLab 的余额接口只给剩余次数，不返回重置日期。
@@ -245,7 +261,9 @@ export function expiryLabel(provider: Provider) {
 }
 
 function quotaLabel(provider: Provider) {
-  if (provider.syncMode === 'openai-billing' && provider.resetAt) return '周期额度'
+  if (provider.syncMode === 'openai-billing' && provider.resetAt) {
+    return periodQuotaLabel(provider)
+  }
   if (provider.syncMode === 'openai-billing') return '账户额度'
   return '周期额度'
 }
@@ -493,11 +511,11 @@ export function providerAlerts(provider: Provider): AlertItem[] {
         : `${provider.name} 额度已用 ${Math.min(99, Math.round(quota.percent))}%`,
       description: exhausted
         ? provider.billing === 'quota'
-          ? `本周期额度 ${formatQuota(quota.total ?? 0, provider)} 已全部用完，请等待重置或续费，或切换到其他供应商。`
+          ? `${periodQuotaLabel(provider)} ${formatQuota(quota.total ?? 0, provider)} 已全部用完，请等待重置或续费，或切换到其他供应商。`
           : '本月预算已全部用完，请调整预算或切换到其他供应商。'
         : provider.billing === 'quota'
           ? `仅剩 ${formatQuota(quota.available, provider)} ${
-              provider.resetAt ? '周期额度' : '账户额度'
+              provider.resetAt ? periodQuotaLabel(provider) : '账户额度'
             }，建议提前补充。`
           : `本月预算仅剩 ${formatMoney(Math.max((quota.total ?? 0) - quota.used, 0), provider.currency)}，建议调整预算。`,
     })

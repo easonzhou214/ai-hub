@@ -26,16 +26,38 @@ const CHROME_PATHS = [
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
 ].filter((value): value is string => Boolean(value))
 
+/**
+ * 套餐里的短周期窗口（Krill 叫 `quota`，字段名是 daily_*，实际是一个滚动窗口，
+ * 当前实现是「本周」）。它才是真正决定请求会不会被拒的那层额度：
+ *   2026-10-28 00:00 ~ 2026-11-03 23:59（+08）= $325.50
+ */
+export interface KrillQuotaWindow {
+  totalUsd: number
+  usedUsd: number
+  remainingUsd: number
+  windowStartAt: string
+  windowResetAt: string
+}
+
 export interface KrillAccount {
   creditBalanceUsd: number | null
   lifetimeUsedUsd?: number | null
   planNames: string[]
+  /** 套餐月度标价，仅展示 */
+  planPriceUsd?: number | null
+  /** 订阅编号，例如 69780 */
+  subscriptionId?: string | null
+  subscriptionStartAt?: string
+  subscriptionEndAt: string
+  /** 套餐总额（30 天的月额度） */
   quotaTotalUsd: number | null
   quotaUsedUsd: number | null
   quotaRemainingUsd: number | null
+  /** 周窗口额度；没有窗口的套餐为 null */
+  window?: KrillQuotaWindow | null
   resetAt: string
-  subscriptionEndAt: string
   cycle: 'week' | 'month'
+  entryRoutes?: string[]
 }
 
 /**
@@ -714,6 +736,7 @@ function parseKrillAccount(payload: unknown): KrillAccount {
     : []
 
   const planNames: string[] = []
+  const entryRoutes: string[] = []
   let total = 0
   let remaining = 0
   let used = 0
@@ -721,6 +744,16 @@ function parseKrillAccount(payload: unknown): KrillAccount {
   let cycle: 'week' | 'month' = 'month'
   const resetCandidates: number[] = []
   const endCandidates: number[] = []
+  /** 周窗口（短周期）额度：真正决定请求能否通过的那层 */
+  let windowTotal = 0
+  let windowUsed = 0
+  let windowRemaining = 0
+  let hasWindow = false
+  let windowStartAt = ''
+  let subscriptionId: string | null = null
+  let latestEnd = 0
+  let subscriptionStartAt = ''
+  let planPriceUsd: number | null = null
 
   for (const subscription of subscriptions) {
     const plan =
@@ -730,8 +763,20 @@ function parseKrillAccount(payload: unknown): KrillAccount {
     if (typeof plan.name === 'string' && plan.name.trim()) {
       planNames.push(plan.name.trim())
     }
+    if (Array.isArray(plan.entry_route_keys)) {
+      for (const route of plan.entry_route_keys) {
+        if (typeof route === 'string' && route.trim()) {
+          entryRoutes.push(route.trim())
+        }
+      }
+    }
     if (plan.billing_type === 'usd_weekly') cycle = 'week'
+    // 月卡标价只是套餐信息，和可用额度无关，取第一个非空值展示。
+    if (planPriceUsd === null) {
+      planPriceUsd = finiteNumber(plan.price_usd_per_month)
+    }
 
+    // 套餐总额：Krill 的 total_limit_usd 是整份套餐（30 天）的额度。
     const limit = finiteNumber(subscription.total_limit_usd)
     const available = finiteNumber(subscription.total_remaining_usd)
     const spent = finiteNumber(subscription.total_used_usd)
@@ -742,13 +787,43 @@ function parseKrillAccount(payload: unknown): KrillAccount {
       if (spent !== null) used += spent
     }
 
+    // 短窗口额度：quota.daily_limit_usd 命名有误导，实际是 window_start_at →
+    // window_reset_at 之间可用的一份额度（当前套餐是 7 天）。
+    const quota =
+      subscription.quota && typeof subscription.quota === 'object'
+        ? (subscription.quota as Record<string, unknown>)
+        : null
+    const windowLimit =
+      finiteNumber(quota?.daily_limit_usd) ?? finiteNumber(quota?.limit_usd)
+    if (quota && windowLimit !== null && windowLimit > 0) {
+      hasWindow = true
+      windowTotal += windowLimit
+      windowUsed += finiteNumber(quota.used_usd) ?? 0
+      windowRemaining +=
+        finiteNumber(quota.remaining_usd) ?? Math.max(windowLimit, 0)
+      const start = isoFrom(quota.window_start_at)
+      if (start && !windowStartAt) windowStartAt = start
+    }
+
     const windowReset = isoFrom(
       (subscription.quota as Record<string, unknown> | undefined)
         ?.window_reset_at,
     )
     const endAt = isoFrom(subscription.subscription_end_at)
-    if (windowReset) resetCandidates.push(new Date(windowReset).getTime())
+    if (windowReset) {
+      resetCandidates.push(new Date(windowReset).getTime())
+    }
     if (endAt) endCandidates.push(new Date(endAt).getTime())
+
+    // 多份订阅时取「最晚结束」的那一份做展示（当前账号通常只有一份）。
+    const endMs = endAt ? new Date(endAt).getTime() : 0
+    if (endMs >= latestEnd) {
+      latestEnd = endMs
+      const id = finiteNumber(subscription.subscription_id)
+      subscriptionId = id === null ? null : String(Math.trunc(id))
+      const startIso = isoFrom(subscription.subscription_start_at)
+      if (startIso) subscriptionStartAt = startIso
+    }
   }
 
   const creditBalanceUsd = finiteNumber(root.credit_balance_usd)
@@ -774,20 +849,49 @@ function parseKrillAccount(payload: unknown): KrillAccount {
     .filter((time) => Number.isFinite(time) && time > Date.now())
     .sort((a, b) => a - b)
 
+  // resetAt 与「本周窗口重置」是同一个时刻：接口只提供 window_reset_at。
+  const resetAt = futureResets[0]
+    ? new Date(futureResets[0]).toISOString()
+    : ''
+
+  const window: KrillQuotaWindow | null = hasWindow
+    ? {
+        totalUsd: Math.round(windowTotal * 100) / 100,
+        // 接口没给 used 时用 limit - remaining 反推，避免把「用了一半」显示成 0。
+        usedUsd:
+          Math.round(
+            Math.max(
+              windowUsed > 0 ? windowUsed : windowTotal - windowRemaining,
+              0,
+            ) * 100,
+          ) / 100,
+        remainingUsd: Math.round(Math.max(windowRemaining, 0) * 100) / 100,
+        windowStartAt,
+        windowResetAt: resetAt,
+      }
+    : null
+
+  if (window) cycle = 'week'
+
   return {
     creditBalanceUsd:
       creditBalanceUsd === null
         ? null
         : Math.round(creditBalanceUsd * 100) / 100,
     planNames: [...new Set(planNames)],
-    quotaTotalUsd,
-    quotaUsedUsd,
-    quotaRemainingUsd,
-    resetAt: futureResets[0] ? new Date(futureResets[0]).toISOString() : '',
+    planPriceUsd,
+    subscriptionId,
+    subscriptionStartAt,
     subscriptionEndAt: futureEnds[0]
       ? new Date(futureEnds[0]).toISOString()
       : '',
+    quotaTotalUsd,
+    quotaUsedUsd,
+    quotaRemainingUsd,
+    window,
+    resetAt,
     cycle,
+    entryRoutes: [...new Set(entryRoutes)],
   }
 }
 
