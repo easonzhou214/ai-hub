@@ -672,30 +672,24 @@ export function ProviderDrawer({
 
               {isAutoSynced && provider && autoQuota ? (
                 <div className="auto-quota-block">
-                  <div className="form-grid">
-                    <Field
-                      label="套餐名称"
-                      htmlFor={`${uid}-plan-auto`}
-                      className="full"
-                      fieldKey="planName"
-                      hint={
-                        provider.syncMode === 'pixellab'
-                          ? '由 PixelLab 返回的套餐名覆盖'
-                          : '仅用于看板展示，不影响接口额度'
-                      }
-                    >
-                      <input
-                        id={`${uid}-plan-auto`}
-                        value={form.planName}
-                        disabled={provider.syncMode === 'pixellab'}
-                        onChange={(event) =>
-                          update('planName', event.target.value)
-                        }
-                        placeholder="例如：Codex · gpt-6.1-sol"
-                        autoComplete="off"
-                      />
-                    </Field>
-                  </div>
+                  {provider.syncMode === 'pixellab' && (
+                    <div className="form-grid">
+                      <Field
+                        label="套餐名称"
+                        htmlFor={`${uid}-plan-auto`}
+                        className="full"
+                        fieldKey="planName"
+                        hint="由 PixelLab 返回的套餐名覆盖"
+                      >
+                        <input
+                          id={`${uid}-plan-auto`}
+                          value={form.planName}
+                          disabled
+                          autoComplete="off"
+                        />
+                      </Field>
+                    </div>
+                  )}
 
                   <div className="auto-quota-grid">
                     {needsLogin ? (

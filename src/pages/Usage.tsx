@@ -557,7 +557,6 @@ export function UsagePage({
                           )}
                         </div>
                         <span>
-                          {provider.vendor} ·{' '}
                           {synced
                             ? needsLogin
                               ? '接口账户 · 待登录'

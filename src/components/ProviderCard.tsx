@@ -86,9 +86,6 @@ export function ProviderCard({
           <div className="pc-name-row">
             <h4>{provider.name}</h4>
           </div>
-          <p className="pc-sub" title={`${provider.vendor} · ${provider.planName}`}>
-            {provider.vendor} · {provider.planName}
-          </p>
         </div>
         <StatusBadge status={status} />
       </div>
@@ -256,12 +253,6 @@ export function ProviderCard({
                 {resetLabel(provider)}
               </span>
             )}
-            {provider.modelCount ? (
-              <span className="pc-meta">
-                <Icon name="layers" size={13} />
-                {provider.modelCount} 个模型
-              </span>
-            ) : null}
             {provider.syncError && (
               <span className="pc-sync-error" title={provider.syncError}>
                 同步失败

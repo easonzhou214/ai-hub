@@ -351,9 +351,8 @@ function parseWebAccountSnapshot(
   }
 
   /**
-   * 网页套餐名单独放在 `subscriptionPlan`：`planName` 是 CC Switch 导入时
-   * 按模型生成的标签（如「Codex · gpt-6.1-sol」），是用户认得的名字，
-   * 不能被接口返回的套餐名覆盖掉。
+   * 网页套餐名单独放在 `subscriptionPlan`，与账户的 `planName` 分开保存，
+   * 避免接口同步覆盖账户配置。
    */
   const planMeta = {
     ...(account.planNames?.[0] ? { subscriptionPlan: account.planNames[0] } : {}),

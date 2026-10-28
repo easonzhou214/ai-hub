@@ -98,7 +98,7 @@ export function ccSwitchProviderToProvider(
     apiKey: config.apiKey,
     billing: 'quota',
     currency: 'USD',
-    planName: `Codex · ${config.model || 'Custom API'}`,
+    planName: '接口额度账户',
     quotaTotal: existing?.quotaTotal ?? 0,
     quotaUsed: existing?.quotaUsed ?? 0,
     cycle: existing?.cycle ?? 'month',

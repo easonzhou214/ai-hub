@@ -254,7 +254,7 @@ export function ProvidersPage({
           <div className="provider-table">
             <div className="pt-head">
               <span>供应商</span>
-              <span>套餐 / 类型</span>
+              <span>类型 / 同步</span>
               <span>剩余额度</span>
               <span>状态</span>
               <span className="pt-head-actions">启用 / 操作</span>
@@ -319,7 +319,6 @@ export function ProvidersPage({
                   <div className="pt-plan">
                     <div className="pt-plan-line">
                       <TypeChip type={provider.type} />
-                      <span className="pt-plan-name">{provider.planName}</span>
                     </div>
                     <span className="pt-sub">
                       {synced ? (
@@ -339,9 +338,6 @@ export function ProvidersPage({
                                   : hasAccountBalance
                                     ? '账户余额'
                                     : '接口同步'}
-                          {provider.modelCount
-                            ? ` · ${provider.modelCount} 个模型`
-                            : ''}
                         </>
                       ) : (
                         <>
