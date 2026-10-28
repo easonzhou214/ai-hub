@@ -838,9 +838,15 @@ export default function App() {
       }
     }
     const handleOnline = () => {
-      if (document.visibilityState === 'visible') scheduleSync(600)
+      // 和「切回标签页」一样先过 needsSync()：网络抖动时 online 会连着来
+      // 好几下，不设这道闸门就是一波接一波的全量同步。
+      if (document.visibilityState === 'visible' && needsSync()) {
+        scheduleSync(600)
+      }
     }
 
+    // 定时轮询保持无条件：它就是 5 分钟节奏本身，再套一层新鲜度判断只会
+    // 让间隔在 5～10 分钟之间漂。
     if (needsSync()) initialTimer = window.setTimeout(syncNow, 800)
     const interval = window.setInterval(syncNow, AUTO_SYNC_INTERVAL_MS)
     document.addEventListener('visibilitychange', handleVisibility)
